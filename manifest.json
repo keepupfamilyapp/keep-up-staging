@@ -2,14 +2,14 @@
   "name": "Keep Up",
   "short_name": "Keep Up",
   "description": "Private family social network",
-  "start_url": "/Keepup/",
+  "start_url": "./",
   "display": "standalone",
   "background_color": "#FAF6F0",
   "theme_color": "#C4714A",
   "orientation": "portrait",
   "icons": [
     {
-      "src": "/Keepup/icon.svg",
+      "src": "icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"
