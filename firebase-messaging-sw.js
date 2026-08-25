@@ -5,7 +5,7 @@
 importScripts("https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js");
 importScripts("https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js");
 
-var IS_STAGING = self.location.hostname.indexOf("keepup-staging") !== -1;
+var IS_STAGING = self.location.pathname.indexOf("keep-up-staging") !== -1;
 
 var FIREBASE_CONFIG_PROD = {
   apiKey: "AIzaSyBLUsaETkcXh_1f2KOayMAkhM9jPb1XE9Y",
