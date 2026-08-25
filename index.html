@@ -1258,11 +1258,14 @@ function buildOnboarding(){
     body.appendChild(d({cls:"ob-spacer"}));
     function friendlyAuthError(e){
       var code=e&&e.code||"";
-      if(code==="auth/invalid-phone-number")return"That doesn't look like a valid phone number. Double-check the digits and try again.";
-      if(code==="auth/too-many-requests")return"Too many attempts. Please wait a few minutes and try again.";
-      if(code==="auth/quota-exceeded")return"We've hit a temporary limit sending codes. Please try again in a few minutes.";
-      if(code==="auth/network-request-failed")return"No internet connection. Check your connection and try again.";
-      return"Something went wrong sending your code. Please double-check your number and try again.";
+      var msg=e&&e.message||"";
+      var friendly;
+      if(code==="auth/invalid-phone-number")friendly="That doesn't look like a valid phone number. Double-check the digits and try again.";
+      else if(code==="auth/too-many-requests")friendly="Too many attempts. Please wait a few minutes and try again.";
+      else if(code==="auth/quota-exceeded")friendly="We've hit a temporary limit sending codes. Please try again in a few minutes.";
+      else if(code==="auth/network-request-failed")friendly="No internet connection. Check your connection and try again.";
+      else friendly="Something went wrong sending your code. Please double-check your number and try again.";
+      return friendly+(code?" ["+code+"]":"")+(msg&&msg!==code?" - "+msg.substring(0,150):"");
     }
     var sendBtn=makeBtn("Send Code",function(){
       hidePhoneErr();
