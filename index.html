@@ -1049,6 +1049,11 @@ var ST={
 
 function el(tag,attrs,children){
   var e=document.createElement(tag);
+  // Elements that carry live event listener closures, form state, or media
+  // playback state must never be silently reused during DOM morphing -
+  // always fully replace them so they always get fresh, correct behavior.
+  var NOMORPH_TAGS={BUTTON:1,INPUT:1,TEXTAREA:1,SELECT:1,VIDEO:1,IFRAME:1,AUDIO:1};
+  if(NOMORPH_TAGS[tag.toUpperCase()])e.setAttribute("data-nomorph","1");
   if(attrs){
     if(attrs.cls){e.className=attrs.cls;delete attrs.cls;}
     if(attrs.css){Object.assign(e.style,attrs.css);delete attrs.css;}
@@ -1187,20 +1192,147 @@ function timeAgo(ts){
   var d=new Date(ms);return(d.getMonth()+1)+"/"+d.getDate();
 }
 
+// ============================================================
+// DOM MORPHING ENGINE
+// ============================================================
+// Patches an existing DOM tree to match a freshly-built one, updating only
+// what actually changed instead of tearing down and rebuilding everything
+// on every single interaction. This is what makes redraw() cheap at scale.
+//
+// SAFETY RULE (do not weaken this): any element that can carry a live
+// event-listener closure or independent runtime state - buttons, inputs,
+// textareas, selects, video/iframe/audio - is ALWAYS fully replaced, never
+// morphed in place. Reusing those nodes would silently keep the PREVIOUS
+// render's closures and captured values (e.g. a delete button still bound
+// to yesterday's postId), which is a worse and harder-to-notice bug than
+// the performance problem this system solves. This check is by tag name,
+// not just the data-nomorph attribute, so it's safe even for elements
+// created outside the el()/b() helpers.
+var NOMORPH_TAGSET={BUTTON:1,INPUT:1,TEXTAREA:1,SELECT:1,VIDEO:1,IFRAME:1,AUDIO:1,CANVAS:1};
+function shouldReplaceNotMorph(node){
+  if(!node||node.nodeType!==1)return false;
+  if(NOMORPH_TAGSET[node.tagName])return true;
+  if(node.hasAttribute&&node.hasAttribute("data-nomorph"))return true;
+  return false;
+}
+
+function morphNode(oldNode,newNode){
+  if(!oldNode)return newNode;
+  if(!newNode){oldNode.remove();return null;}
+
+  if(oldNode.nodeType!==newNode.nodeType){
+    oldNode.replaceWith(newNode);
+    return newNode;
+  }
+  if(oldNode.nodeType===3){ // text node
+    if(oldNode.textContent!==newNode.textContent)oldNode.textContent=newNode.textContent;
+    return oldNode;
+  }
+  if(oldNode.nodeType!==1){ // comment nodes etc
+    if(oldNode.nodeValue!==newNode.nodeValue)oldNode.replaceWith(newNode);
+    return oldNode;
+  }
+  if(oldNode.tagName!==newNode.tagName){
+    oldNode.replaceWith(newNode);
+    return newNode;
+  }
+  if(shouldReplaceNotMorph(oldNode)||shouldReplaceNotMorph(newNode)){
+    if(oldNode!==newNode)oldNode.replaceWith(newNode);
+    return newNode;
+  }
+
+  // Sync attributes (covers style/class since those are attributes too)
+  var oldAttrs=oldNode.attributes;
+  for(var i=oldAttrs.length-1;i>=0;i--){
+    var an=oldAttrs[i].name;
+    if(!newNode.hasAttribute(an))oldNode.removeAttribute(an);
+  }
+  var newAttrs=newNode.attributes;
+  for(var j=0;j<newAttrs.length;j++){
+    var na=newAttrs[j].name;var nv=newAttrs[j].value;
+    if(oldNode.getAttribute(na)!==nv)oldNode.setAttribute(na,nv);
+  }
+
+  morphChildren(oldNode,newNode);
+  return oldNode;
+}
+
+function morphChildren(oldParent,newParent){
+  var oldKids=Array.prototype.slice.call(oldParent.childNodes);
+  var newKids=Array.prototype.slice.call(newParent.childNodes);
+
+  // Elements with a stable id are matched by that id regardless of position
+  // (so a post inserted at the top of the feed doesn't confuse everything
+  // below it). Everything else is matched positionally among its own
+  // unkeyed siblings, which is a reasonable fallback for ordinary
+  // structural content that doesn't reorder.
+  var oldById={};
+  var oldUnkeyed=[];
+  oldKids.forEach(function(k){
+    if(k.nodeType===1&&k.id)oldById[k.id]=k;
+    else oldUnkeyed.push(k);
+  });
+  var usedOldIds={};
+  var unkeyedCursor=0;
+
+  var cursor=null;
+  newKids.forEach(function(nk){
+    var match=null;
+    if(nk.nodeType===1&&nk.id){
+      if(oldById[nk.id]&&!usedOldIds[nk.id]){
+        match=oldById[nk.id];
+        usedOldIds[nk.id]=true;
+      }
+    } else if(unkeyedCursor<oldUnkeyed.length){
+      match=oldUnkeyed[unkeyedCursor];
+      unkeyedCursor++;
+    }
+    var result=match?morphNode(match,nk):nk;
+    var afterCursor=cursor?cursor.nextSibling:oldParent.firstChild;
+    if(result!==afterCursor)oldParent.insertBefore(result,afterCursor);
+    cursor=result;
+  });
+
+  // Remove leftover old children that weren't reused
+  oldKids.forEach(function(k){
+    if(k.id){if(usedOldIds[k.id])return;}
+    else{var idx=oldUnkeyed.indexOf(k);if(idx!==-1&&idx<unkeyedCursor)return;}
+    if(k.parentNode===oldParent)k.remove();
+  });
+}
+
 function redraw(){
   try{
     var old=document.getElementById("app");
-    // redraw() fully rebuilds the DOM, which would otherwise silently
-    // reset anyone's scroll position back to the top of the feed on
-    // every single interaction (commenting, reacting, posting, etc).
-    // Capture and restore it here, alongside the virtual-scroll item
-    // count already being preserved in ST.feedRendered.
+    // redraw() used to fully rebuild the DOM every time, which silently
+    // reset scroll position on every single interaction. Morphing avoids
+    // that at the source (the live #app element is never destroyed, just
+    // patched), so this manual restore is now mostly a safety net for any
+    // edge case the morphing engine doesn't catch - kept intentionally,
+    // costs nothing if morphing already preserved position correctly.
     var prevScrollEl=document.getElementById("feed-list");
     var prevScrollTop=prevScrollEl?prevScrollEl.scrollTop:null;
     var prevGroup=ST.group;
     var next=buildApp();
-    if(old)old.replaceWith(next);
-    else document.body.appendChild(next);
+    if(old){
+      // Try to morph in place instead of a full teardown/rebuild. Falls
+      // back to the old, proven full-replace behavior if morphing throws
+      // for any reason - this is newer code, so it fails safe rather than
+      // risking a broken screen. ST._useMorph=false is an easy kill-switch
+      // for testing.
+      var morphOk=false;
+      if(ST._useMorph!==false){
+        try{
+          morphNode(old,next);
+          morphOk=true;
+        }catch(morphErr){
+          console.log("morph failed, falling back to full replace:",morphErr);
+        }
+      }
+      if(!morphOk)old.replaceWith(next);
+    } else {
+      document.body.appendChild(next);
+    }
     if(prevScrollTop!==null&&ST.group===prevGroup){
       var newScrollEl=document.getElementById("feed-list");
       if(newScrollEl){
@@ -1357,6 +1489,28 @@ function buildOnboarding(){
           // someone who lost local storage/their bookmark and re-verifies
           // should be logged straight back in, not sent through onboarding again.
           db.collection("profiles").doc(result.user.uid).get().then(function(pdoc){
+            if(pdoc.exists&&ST.joinInvite&&ST.pendingInviteToken){
+              // Existing account tapped a fresh invite link (Firebase Phone
+              // Auth returns the same account for the same number) - add the
+              // invited group to their existing account instead of silently
+              // restoring their old state and ignoring the invite entirely.
+              var p0=pdoc.data();
+              if(p0.name){ST.name=p0.name;localStorage.setItem("ku_name",p0.name);}
+              if(p0.av){
+                var isValidAv0=p0.av.startsWith("http")||p0.av.startsWith("data:")||p0.av.length<=8;
+                ST.avatar=isValidAv0?p0.av:"\uD83D\uDC64";
+                localStorage.setItem("ku_av",ST.avatar);
+              }
+              ST.boarded=true;localStorage.setItem("ku_ob","1");
+              db.collection("userGroups").doc(result.user.uid).get().then(function(gdoc0){
+                if(gdoc0.exists&&gdoc0.data().groups&&gdoc0.data().groups.length>0){
+                  ST.groups=gdoc0.data().groups;
+                  try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
+                }
+                joinAdditionalGroupViaToken(ST.pendingInviteToken);
+              }).catch(function(){joinAdditionalGroupViaToken(ST.pendingInviteToken);});
+              return;
+            }
             if(pdoc.exists){
               var p=pdoc.data();
               if(p.name){ST.name=p.name;localStorage.setItem("ku_name",p.name);}
@@ -1380,8 +1534,10 @@ function buildOnboarding(){
                   redraw();
                 }
                 if(hasGroups){
-                  db.collection("members").doc(result.user.uid+"_"+ST.groups[0].id).get().then(function(mdoc){
-                    if(mdoc.exists&&mdoc.data().isAdmin!==undefined)localStorage.setItem("ku_admin",mdoc.data().isAdmin?"1":"0");
+                  db.collection("members").where("uid","==",result.user.uid).get().then(function(mSnap){
+                    var isAdminAnywhere=false;
+                    mSnap.forEach(function(mdoc){if(mdoc.data().isAdmin)isAdminAnywhere=true;});
+                    localStorage.setItem("ku_admin",isAdminAnywhere?"1":"0");
                     finishRestore();
                   }).catch(finishRestore);
                 } else {
@@ -1994,7 +2150,7 @@ function buildFeed(t,grp){
 
 function buildItem(item,t){
   var rx=ST.reactions[item.id];var pc=ST.comments[item.id]||[];
-  var wrap=d({css:{animation:"fadeUp .3s ease both",borderBottom:"1px solid #F5DDD1",marginBottom:"0"}});
+  var wrap=d({id:"item-"+item.id,css:{animation:"fadeUp .3s ease both",borderBottom:"1px solid #F5DDD1",marginBottom:"0"}});
   if(item.type==="birthday"){
     var card=d({css:{background:"linear-gradient(135deg,#FFF8E8,#FBF0D0)",border:"none",borderBottom:"2px solid #E8C878",padding:"14px 16px",display:"flex",gap:"12px",alignItems:"center"}});
     var cake=d({css:{fontSize:"40px",flexShrink:0}});cake.textContent="\uD83C\uDF82";card.appendChild(cake);
@@ -3962,7 +4118,9 @@ function buildCreateGroup(){
     // Save updated groups to localStorage
     try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
     if(currentUser){
-      db.collection("userGroups").doc(currentUser.uid).set({groups:ST.groups}).catch(function(){});
+      db.collection("userGroups").doc(currentUser.uid).set({
+        groups:firebase.firestore.FieldValue.arrayUnion(newGroup)
+      },{merge:true}).catch(function(){});
       db.collection("fcmTokens").doc(currentUser.uid).set({groupIds:ST.groups.map(function(gr){return gr.id;})},{merge:true}).catch(function(){});
     }
     redraw();
@@ -4502,7 +4660,10 @@ function joinAdditionalGroupViaToken(token){
     ST.groups.push(newGroup);
     ST.feed[gid]=[];ST.chatMsgs[gid]=[];
     try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
-    db.collection("userGroups").doc(currentUser.uid).set({groups:ST.groups,updatedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(){});
+    db.collection("userGroups").doc(currentUser.uid).set({
+      groups:firebase.firestore.FieldValue.arrayUnion(newGroup),
+      updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+    },{merge:true}).catch(function(){});
     db.collection("members").doc(currentUser.uid+"_"+gid).set({
       uid:currentUser.uid,name:ST.name,av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),
       groupId:gid,groupLabel:newGroup.label,groupIcon:newGroup.icon,isAdmin:false,
@@ -4687,8 +4848,10 @@ auth.onAuthStateChanged(function(user){
             redraw();
           }
           if(hasGroups){
-            db.collection("members").doc(user.uid+"_"+ST.groups[0].id).get().then(function(mdoc){
-              if(mdoc.exists&&mdoc.data().isAdmin!==undefined)localStorage.setItem("ku_admin",mdoc.data().isAdmin?"1":"0");
+            db.collection("members").where("uid","==",user.uid).get().then(function(mSnap){
+              var isAdminAnywhere=false;
+              mSnap.forEach(function(mdoc){if(mdoc.data().isAdmin)isAdminAnywhere=true;});
+              localStorage.setItem("ku_admin",isAdminAnywhere?"1":"0");
               finishSignin();
             }).catch(finishSignin);
           } else {
