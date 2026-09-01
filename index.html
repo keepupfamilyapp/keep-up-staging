@@ -1321,7 +1321,7 @@ function redraw(){
       // risking a broken screen. ST._useMorph=false is an easy kill-switch
       // for testing.
       var morphOk=false;
-      if(ST._useMorph!==false){
+      if(ST._useMorph!==false&&localStorage.getItem("_forceNoMorph")!=="1"){
         try{
           morphNode(old,next);
           morphOk=true;
