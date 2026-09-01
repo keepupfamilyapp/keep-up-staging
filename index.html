@@ -2112,7 +2112,8 @@ function buildFeed(t,grp){
       ["\uD83D\uDCF8","Live",function(){pickFile("image/*","environment",handlePhoto);}]
     ]);
     sub.classList.add("qa-sub");
-    fabWrap.insertBefore(sub,photoRow);
+    if(photoRow.parentNode===fabWrap)fabWrap.insertBefore(sub,photoRow);
+    else fabWrap.appendChild(sub);
   });
 
   // Video row with sub-options
@@ -2124,7 +2125,8 @@ function buildFeed(t,grp){
       ["\uD83C\uDFA5","Live",function(){pickFile("video/*","camcorder",handleVideo);}]
     ]);
     sub.classList.add("qa-sub");
-    fabWrap.insertBefore(sub,videoRow);
+    if(videoRow.parentNode===fabWrap)fabWrap.insertBefore(sub,videoRow);
+    else fabWrap.appendChild(sub);
   });
 
   var updateRow=makeQA("\u270F\uFE0F","Update",function(){
@@ -2137,12 +2139,23 @@ function buildFeed(t,grp){
     if(qaVisible){hideAll();return;}
     qaVisible=true;
     fab.style.transform="rotate(45deg)";fab.textContent="\u2715";
-    [updateRow,videoRow,photoRow].forEach(function(r){fabWrap.insertBefore(r,fab);});
+    [updateRow,videoRow,photoRow].forEach(function(r){
+      if(fab.parentNode===fabWrap)fabWrap.insertBefore(r,fab);
+      else fabWrap.appendChild(r);
+    });
   });
 
-  document.addEventListener("touchstart",function(e){
+  // This whole FAB gets rebuilt on every redraw (every reaction, comment,
+  // message elsewhere in the app), so this listener was being re-attached
+  // to `document` every single time with no cleanup - the same duplicate-
+  // listener pattern found and fixed for online/offline detection and
+  // foreground notifications earlier. Removing the previous one first
+  // keeps exactly one live at a time, always the current render's.
+  if(window._fabTouchHandler)document.removeEventListener("touchstart",window._fabTouchHandler);
+  window._fabTouchHandler=function(e){
     if(qaVisible&&!fabWrap.contains(e.target)){hideAll();}
-  },{passive:true});
+  };
+  document.addEventListener("touchstart",window._fabTouchHandler,{passive:true});
 
   fabWrap.appendChild(fab);wrap.appendChild(fabWrap);
   return wrap;
