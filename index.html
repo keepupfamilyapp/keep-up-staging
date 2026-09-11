@@ -1818,7 +1818,7 @@ function buildApp(){
   var homeBg=ST.tab==="feed"?t.a:(ST.tab==="profile"?"#E8956D":"white");
   var homeClr=ST.tab==="feed"||ST.tab==="profile"?"white":"#3D2314";
   var homeBox=ST.tab==="profile"?"0 4px 20px rgba(232,149,109,.5)":"0 4px 20px rgba(0,0,0,.2)";
-  var homeBtn=b({css:{width:"52px",height:"52px",borderRadius:"50%",background:homeBg,border:"none",fontSize:"22px",boxShadow:homeBox,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,WebkitUserSelect:"none",userSelect:"none",WebkitTouchCallout:"none"}});
+  var homeBtn=b({id:"home-btn",css:{width:"52px",height:"52px",borderRadius:"50%",background:homeBg,border:"none",fontSize:"22px",boxShadow:homeBox,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,WebkitUserSelect:"none",userSelect:"none",WebkitTouchCallout:"none"}});
   // Count all unread - group chats + DMs
   var totalUnread=0;
   ST.groups.forEach(function(g){if(hasUnread(g.id))totalUnread++;});
@@ -1841,7 +1841,7 @@ function buildApp(){
         :"");
       var existingPill=navFloat.querySelector(".nav-pill");
       if(ST.navExpanded&&!existingPill){
-        var navPill2=d({css:{background:"white",borderRadius:"50px",padding:"5px 6px",display:"flex",gap:"2px",boxShadow:"0 4px 20px rgba(0,0,0,.15)",animation:"fadeUp .2s ease"}});
+        var navPill2=d({id:"nav-pill-menu",css:{background:"white",borderRadius:"50px",padding:"5px 6px",display:"flex",gap:"2px",boxShadow:"0 4px 20px rgba(0,0,0,.15)",animation:"fadeUp .2s ease"}});
         navPill2.className="nav-pill";
         [["chat","&#128172;","Chat"],["calendar","&#128197;","Cal"],["profile","&#128100;","Me"]].forEach(function(n){
           var nb=b({css:{display:"flex",flexDirection:"column",alignItems:"center",gap:"2px",padding:"5px 12px",borderRadius:"50px",background:ST.tab===n[0]?t.ap:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit",WebkitUserSelect:"none",userSelect:"none"}});
