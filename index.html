@@ -873,7 +873,7 @@ function doSync(){
   unsubscribers.push(notifUnsub);
 
   // Listen to members
-  var memUnsub=db.collection("members").where("groupId","in",myGroupIds).onSnapshot(function(snap){
+  watchGroupScoped("members",myGroupIds,function(snap){
     ST.fbMembers=ST.fbMembers||{};
     var uidsSeen={};
     snap.forEach(function(doc){
@@ -912,11 +912,10 @@ function doSync(){
         }).catch(function(){});
     }
     for(var bi=0;bi<allUids.length;bi+=10){fetchProfileBatch(allUids.slice(bi,bi+10));}
-  },function(err){handleGenericListenerErr(err,"members");});
-  unsubscribers.push(memUnsub);
+  });
 
   // Listen to comments
-  var cmtUnsub=db.collection("comments").where("groupId","in",myGroupIds).onSnapshot(function(snap){
+  watchGroupScoped("comments",myGroupIds,function(snap){
     // Rebuild all comments from scratch on each snapshot to avoid dupes
     ST.comments={};
     snap.forEach(function(doc){
@@ -930,12 +929,11 @@ function doSync(){
       ST.comments[pid].sort(function(a,b){return tsMillis(a.createdAt)-tsMillis(b.createdAt);});
     });
     if(ST.cmtOpen!==null)redraw();
-  },function(err){handleGenericListenerErr(err,"comments");});
-  unsubscribers.push(cmtUnsub);
+  });
 
   // Listen to RSVPs
   // Listen to all reactions (aggregated per post, for stacked reaction display)
-  var reactUnsub=db.collection("reactions").where("groupId","in",myGroupIds).onSnapshot(function(snap){
+  watchGroupScoped("reactions",myGroupIds,function(snap){
     ST.allReactions={};
     snap.forEach(function(doc){
       var r=doc.data();
@@ -945,30 +943,26 @@ function doSync(){
       if(currentUser&&r.uid===currentUser.uid)ST.reactions[r.postId]=r.em;
     });
     if(ST.tab==="feed")redraw();
-  },function(err){handleGenericListenerErr(err,"reactions");});
-  unsubscribers.push(reactUnsub);
+  });
 
-  var rsvpUnsub=db.collection("rsvps").where("groupId","in",myGroupIds).onSnapshot(function(snap){
+  watchGroupScoped("rsvps",myGroupIds,function(snap){
     snap.forEach(function(doc){
       var r=doc.data();
       if(r.evId)ST.rsvp[r.evId]=r.going;
     });
-  },function(err){handleGenericListenerErr(err,"rsvps");});
-  unsubscribers.push(rsvpUnsub);
+  });
 
   // Listen to events
-  var evUnsub=db.collection("events").where("groupId","in",myGroupIds)
-    .onSnapshot(function(snap){
-      snap.docChanges().forEach(function(change){
-        var data=Object.assign({},change.doc.data(),{id:change.doc.id});
-        if(change.type==="added"&&!ST.evs.find(function(x){return x.id===data.id;})){
-          ST.evs.push(data);
-        }
-        if(change.type==="removed"){ST.evs=ST.evs.filter(function(x){return x.id!==data.id;});}
-      });
-      if(ST.tab==="calendar")redraw();
-    },function(err){handleGenericListenerErr(err,"events");});
-  unsubscribers.push(evUnsub);
+  watchGroupScoped("events",myGroupIds,function(snap){
+    snap.docChanges().forEach(function(change){
+      var data=Object.assign({},change.doc.data(),{id:change.doc.id});
+      if(change.type==="added"&&!ST.evs.find(function(x){return x.id===data.id;})){
+        ST.evs.push(data);
+      }
+      if(change.type==="removed"){ST.evs=ST.evs.filter(function(x){return x.id!==data.id;});}
+    });
+    if(ST.tab==="calendar")redraw();
+  });
 } // end doSync
 
 function postToFeed(item){
@@ -1182,6 +1176,19 @@ function timeAgo(ts){
 // the file's sort callbacks. One shared helper now, so a future format
 // change (or bug fix) only has to happen once.
 function tsMillis(ts){return ts&&ts.toMillis?ts.toMillis():0;}
+
+// members/comments/reactions/rsvps/events listeners in doSync() all queried
+// their collection scoped to the user's groups and reported errors through
+// handleGenericListenerErr the same way - this was being retyped identically
+// 5 times. The actual per-collection processing logic stays where it was;
+// only this shared wrapper (query + error handling + cleanup registration)
+// moved out.
+function watchGroupScoped(collectionName,groupIds,onData){
+  var unsub=db.collection(collectionName).where("groupId","in",groupIds)
+    .onSnapshot(onData,function(err){handleGenericListenerErr(err,collectionName);});
+  unsubscribers.push(unsub);
+  return unsub;
+}
 
 
 // ============================================================
