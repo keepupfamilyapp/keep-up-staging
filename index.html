@@ -1814,7 +1814,7 @@ function buildApp(){
   wrap.appendChild(content);
   // Floating nav
   // Floating nav - home button bottom left, options slide right
-  var navFloat=d({css:{position:"fixed",bottom:"20px",left:"20px",zIndex:45,display:ST.openChat?"none":"flex",flexDirection:"row",alignItems:"center",gap:"8px",WebkitUserSelect:"none",userSelect:"none"}});
+  var navFloat=d({id:"nav-float-wrap",css:{position:"fixed",bottom:"20px",left:"20px",zIndex:45,display:ST.openChat?"none":"flex",flexDirection:"row",alignItems:"center",gap:"8px",WebkitUserSelect:"none",userSelect:"none"}});
   var homeBg=ST.tab==="feed"?t.a:(ST.tab==="profile"?"#E8956D":"white");
   var homeClr=ST.tab==="feed"||ST.tab==="profile"?"white":"#3D2314";
   var homeBox=ST.tab==="profile"?"0 4px 20px rgba(232,149,109,.5)":"0 4px 20px rgba(0,0,0,.2)";
@@ -1830,16 +1830,27 @@ function buildApp(){
     ?"<span style='position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;background:#C0392B;border-radius:50px;border:2px solid white;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:white;font-family:inherit;padding:0 4px;box-sizing:border-box;'>"+( totalUnread>99?"99+":String(totalUnread))+"</span>"
     :"");
   homeBtn.addEventListener("click",function(){
+    // Buttons are always fully rebuilt on any redraw, anywhere in the app
+    // (a family member posting elsewhere is enough). This handler skips
+    // calling redraw() itself to avoid a visual flash, but that means the
+    // homeBtn/navFloat captured above can go stale between "tap registered"
+    // and "handler runs" if some OTHER unrelated redraw slipped in during
+    // that gap. Re-fetching the live elements by id (instead of trusting
+    // this closure's copies) and bailing out quietly if they're gone
+    // avoids the insertBefore crash entirely.
+    var liveHome=document.getElementById("home-btn");
+    var liveNav=document.getElementById("nav-float-wrap");
+    if(!liveHome||!liveNav||liveHome.parentNode!==liveNav)return;
     if(ST.tab!=="feed"){
       ST.tab="feed";ST.navExpanded=false;fetchAllFeeds();history.pushState(null,"",location.href);redraw();
     } else {
       // Toggle nav pill without full redraw to avoid flash
       ST.navExpanded=!ST.navExpanded;
       // Update home button badge immediately when nav state changes
-      homeBtn.innerHTML="&#127968;"+((!ST.navExpanded&&totalUnread>0)
+      liveHome.innerHTML="&#127968;"+((!ST.navExpanded&&totalUnread>0)
         ?"<span style='position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;background:#C0392B;border-radius:50px;border:2px solid white;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:white;font-family:inherit;padding:0 4px;box-sizing:border-box;'>"+( totalUnread>99?"99+":String(totalUnread))+"</span>"
         :"");
-      var existingPill=navFloat.querySelector(".nav-pill");
+      var existingPill=liveNav.querySelector(".nav-pill");
       if(ST.navExpanded&&!existingPill){
         var navPill2=d({id:"nav-pill-menu",css:{background:"white",borderRadius:"50px",padding:"5px 6px",display:"flex",gap:"2px",boxShadow:"0 4px 20px rgba(0,0,0,.15)",animation:"fadeUp .2s ease"}});
         navPill2.className="nav-pill";
@@ -1855,14 +1866,22 @@ function buildApp(){
             nb.style.position="relative";
             nb.appendChild(cpBadge);
           }
-          nb.addEventListener("click",function(){ST.tab=n[0];ST.navExpanded=false;if(n[0]!=="chat")ST.openChat=null;navFloat.removeChild(navPill2);homeBtn.style.background=t.bg;history.pushState(null,"",location.href);redraw();});
+          nb.addEventListener("click",function(){
+            var curHome=document.getElementById("home-btn");
+            var curNav=document.getElementById("nav-float-wrap");
+            var curPill=document.getElementById("nav-pill-menu");
+            ST.tab=n[0];ST.navExpanded=false;if(n[0]!=="chat")ST.openChat=null;
+            if(curPill&&curNav&&curPill.parentNode===curNav)curNav.removeChild(curPill);
+            if(curHome)curHome.style.background=t.bg;
+            history.pushState(null,"",location.href);redraw();
+          });
           navPill2.appendChild(nb);
         });
-        navFloat.insertBefore(navPill2,homeBtn);
-        homeBtn.style.background=t.ap;
+        liveNav.insertBefore(navPill2,liveHome);
+        liveHome.style.background=t.ap;
       } else if(!ST.navExpanded&&existingPill){
-        navFloat.removeChild(existingPill);
-        homeBtn.style.background=ST.tab==="feed"?t.a:"white";
+        liveNav.removeChild(existingPill);
+        liveHome.style.background=ST.tab==="feed"?t.a:"white";
       }
     }
   });
