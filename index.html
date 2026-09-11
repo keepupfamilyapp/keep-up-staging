@@ -2038,14 +2038,24 @@ function buildFeed(t,grp){
   }
   wrap.appendChild(list);
   // FAB + vertical slide-up with horizontal sub-options
-  var fabWrap=d({css:{position:"fixed",bottom:"20px",right:"20px",zIndex:40,display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"10px",WebkitUserSelect:"none",userSelect:"none"}});
+  var fabWrap=d({id:"fab-wrap",css:{position:"fixed",bottom:"20px",right:"20px",zIndex:40,display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"10px",WebkitUserSelect:"none",userSelect:"none"}});
   var qaVisible=false;
+
+  // fabWrap (like every non-button element) can get preserved-in-place by
+  // the morphing engine across redraws rather than replaced - meaning the
+  // fabWrap variable captured in this closure is a disposable template that
+  // was only used to update the REAL, already-on-screen element, and is
+  // never itself attached to the document. Any handler that runs later
+  // (on click, on an outside tap) must look up the actual live element by
+  // id instead of trusting this closure's copy, or it silently manipulates
+  // a detached node - no error, just nothing visibly happens.
+  function liveFabWrap(){return document.getElementById("fab-wrap");}
 
   function hideAll(){
     qaVisible=false;
     fab.style.transform="";fab.textContent="+";fab.style.background=t.a;
-    // Remove all qa rows
-    var rows=fabWrap.querySelectorAll(".qa-row");
+    var lw=liveFabWrap();if(!lw)return;
+    var rows=lw.querySelectorAll(".qa-row");
     rows.forEach(function(r){r.remove();});
   }
 
@@ -2116,28 +2126,32 @@ function buildFeed(t,grp){
   // Photo row with sub-options sliding left
   var photoRow=makeQA("\uD83D\uDCF7","Photo",function(e){
     e.stopPropagation();
+    var lw=liveFabWrap();if(!lw)return;
     // Remove any existing sub-options
-    var existing=fabWrap.querySelector(".qa-sub");if(existing)existing.remove();
+    var existing=lw.querySelector(".qa-sub");if(existing)existing.remove();
     var sub=makeSubOptions([
       ["\uD83D\uDDBC\uFE0F","Gallery",function(){pickFile("image/*",null,handlePhoto);}],
       ["\uD83D\uDCF8","Live",function(){pickFile("image/*","environment",handlePhoto);}]
     ]);
     sub.classList.add("qa-sub");
-    if(photoRow.parentNode===fabWrap)fabWrap.insertBefore(sub,photoRow);
-    else fabWrap.appendChild(sub);
+    var livePhotoRow=document.getElementById("qa-photo-row");
+    if(livePhotoRow&&livePhotoRow.parentNode===lw)lw.insertBefore(sub,livePhotoRow);
+    else lw.appendChild(sub);
   },"qa-photo-row");
 
   // Video row with sub-options
   var videoRow=makeQA("\uD83C\uDFA5","Video",function(e){
     e.stopPropagation();
-    var existing=fabWrap.querySelector(".qa-sub");if(existing)existing.remove();
+    var lw=liveFabWrap();if(!lw)return;
+    var existing=lw.querySelector(".qa-sub");if(existing)existing.remove();
     var sub=makeSubOptions([
       ["\uD83D\uDCFC","Gallery",function(){pickFile("video/*",null,handleVideo);}],
       ["\uD83C\uDFA5","Live",function(){pickFile("video/*","camcorder",handleVideo);}]
     ]);
     sub.classList.add("qa-sub");
-    if(videoRow.parentNode===fabWrap)fabWrap.insertBefore(sub,videoRow);
-    else fabWrap.appendChild(sub);
+    var liveVideoRow=document.getElementById("qa-video-row");
+    if(liveVideoRow&&liveVideoRow.parentNode===lw)lw.insertBefore(sub,liveVideoRow);
+    else lw.appendChild(sub);
   },"qa-video-row");
 
   var updateRow=makeQA("\u270F\uFE0F","Update",function(){
@@ -2148,11 +2162,12 @@ function buildFeed(t,grp){
 
   fab.addEventListener("click",function(){
     if(qaVisible){hideAll();return;}
+    var lw=liveFabWrap();if(!lw)return;
     qaVisible=true;
     fab.style.transform="rotate(45deg)";fab.textContent="\u2715";
     [updateRow,videoRow,photoRow].forEach(function(r){
-      if(fab.parentNode===fabWrap)fabWrap.insertBefore(r,fab);
-      else fabWrap.appendChild(r);
+      if(fab.parentNode===lw)lw.insertBefore(r,fab);
+      else lw.appendChild(r);
     });
   });
 
@@ -2164,7 +2179,8 @@ function buildFeed(t,grp){
   // keeps exactly one live at a time, always the current render's.
   if(window._fabTouchHandler)document.removeEventListener("touchstart",window._fabTouchHandler);
   window._fabTouchHandler=function(e){
-    if(qaVisible&&!fabWrap.contains(e.target)){hideAll();}
+    var lw=liveFabWrap();
+    if(qaVisible&&lw&&!lw.contains(e.target)){hideAll();}
   };
   document.addEventListener("touchstart",window._fabTouchHandler,{passive:true});
 
