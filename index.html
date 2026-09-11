@@ -581,11 +581,7 @@ function doSync(){
         snap.forEach(function(doc){
           ST.feed[gid].push(Object.assign({},doc.data(),{id:doc.id}));
         });
-        ST.feed[gid].sort(function(a,b){
-          var ta=a.createdAt&&a.createdAt.toMillis?a.createdAt.toMillis():0;
-          var tb=b.createdAt&&b.createdAt.toMillis?b.createdAt.toMillis():0;
-          return tb-ta;
-        });
+        ST.feed[gid].sort(function(a,b){return tsMillis(b.createdAt)-tsMillis(a.createdAt);});
         if(ST.tab==="feed")redraw();
       }).catch(function(e){console.log("fetchFeed error:",e);});
   }
@@ -602,11 +598,7 @@ function doSync(){
           if(existing>=0)ST.feed[gid][existing]=data;
           else ST.feed[gid].push(data);
         });
-        ST.feed[gid].sort(function(a,b){
-          var ta=a.createdAt&&a.createdAt.toMillis?a.createdAt.toMillis():0;
-          var tb=b.createdAt&&b.createdAt.toMillis?b.createdAt.toMillis():0;
-          return tb-ta;
-        });
+        ST.feed[gid].sort(function(a,b){return tsMillis(b.createdAt)-tsMillis(a.createdAt);});
         if(ST.tab==="feed")redraw();
       },function(err){handleGroupListenerErr(err,gid);});
     unsubscribers.push(unsub);
@@ -640,11 +632,7 @@ function doSync(){
           if(change.type==="removed"){ST.chatMsgs[gid]=ST.chatMsgs[gid].filter(function(x){return x.id!==data.id;});}
         });
         // Sort by time
-        ST.chatMsgs[gid].sort(function(a,b){
-          var ta=a.createdAt&&a.createdAt.toMillis?a.createdAt.toMillis():0;
-          var tb=b.createdAt&&b.createdAt.toMillis?b.createdAt.toMillis():0;
-          return ta-tb;
-        });
+        ST.chatMsgs[gid].sort(function(a,b){return tsMillis(a.createdAt)-tsMillis(b.createdAt);});
         if(ST.tab==="chat"){
             if(ST.openChat===gid&&document.activeElement&&document.activeElement.tagName==="INPUT"){
               setTimeout(function(){var _cl=document.getElementById("chat-msg-list");if(_cl)_cl.scrollTop=_cl.scrollHeight;},80);
@@ -939,11 +927,7 @@ function doSync(){
     });
     // Sort each post's comments by createdAt
     Object.keys(ST.comments).forEach(function(pid){
-      ST.comments[pid].sort(function(a,b){
-        var ta=a.createdAt&&a.createdAt.toMillis?a.createdAt.toMillis():0;
-        var tb=b.createdAt&&b.createdAt.toMillis?b.createdAt.toMillis():0;
-        return ta-tb;
-      });
+      ST.comments[pid].sort(function(a,b){return tsMillis(a.createdAt)-tsMillis(b.createdAt);});
     });
     if(ST.cmtOpen!==null)redraw();
   },function(err){handleGenericListenerErr(err,"comments");});
@@ -1191,6 +1175,14 @@ function timeAgo(ts){
   if(diff<604800)return Math.floor(diff/86400)+"d ago";
   var d=new Date(ms);return(d.getMonth()+1)+"/"+d.getDate();
 }
+
+// Firestore timestamps need .toMillis() before they can be compared/sorted,
+// but a doc that hasn't synced its server timestamp yet has a null field -
+// this was being reimplemented identically in 5 different places across
+// the file's sort callbacks. One shared helper now, so a future format
+// change (or bug fix) only has to happen once.
+function tsMillis(ts){return ts&&ts.toMillis?ts.toMillis():0;}
+
 
 // ============================================================
 // DOM MORPHING ENGINE
@@ -4431,7 +4423,7 @@ ST.upImg=null;ST.upPhotos=[];
       db.collection("feed").where("groupId","==",postGroup).get().then(function(snap){
         ST.feed[postGroup]=[];
         snap.forEach(function(doc){ST.feed[postGroup].push(Object.assign({},doc.data(),{id:doc.id}));});
-        ST.feed[postGroup].sort(function(a,b){var ta=a.createdAt&&a.createdAt.toMillis?a.createdAt.toMillis():0;var tb=b.createdAt&&b.createdAt.toMillis?b.createdAt.toMillis():0;return tb-ta;});
+        ST.feed[postGroup].sort(function(a,b){return tsMillis(b.createdAt)-tsMillis(a.createdAt);});
         redraw();
       });
     }).catch(function(e){console.log("checkin post failed",e);});
