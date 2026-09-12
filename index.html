@@ -4902,7 +4902,38 @@ auth.onAuthStateChanged(function(user){
               finishSignin();
             }).catch(finishSignin);
           } else {
-            finishSignin();
+            // A profile exists but userGroups is missing or empty - this has
+            // happened to real accounts from earlier data bugs (a wholesale
+            // overwrite instead of a merge, a migration that missed a step).
+            // Rather than proceed with an empty group list and crash later,
+            // check whether real membership docs exist for this person and
+            // silently reconstruct userGroups from them - the same repair
+            // that's had to be done by hand in the Firestore console for
+            // several real users so far.
+            db.collection("members").where("uid","==",user.uid).get().then(function(mSnap){
+              var isAdminAnywhere=false;
+              var rebuiltGroups=[];
+              mSnap.forEach(function(mdoc){
+                var m=mdoc.data();
+                if(m.isAdmin)isAdminAnywhere=true;
+                if(m.groupId&&!rebuiltGroups.find(function(g){return g.id===m.groupId;})){
+                  rebuiltGroups.push({id:m.groupId,label:m.groupLabel||"Family",icon:m.groupIcon||"\u2764\uFE0F"});
+                }
+              });
+              localStorage.setItem("ku_admin",isAdminAnywhere?"1":"0");
+              if(rebuiltGroups.length>0){
+                ST.groups=rebuiltGroups;
+                ST.group=ST.groups[0].id;
+                try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
+                try{localStorage.setItem("ku_grp",JSON.stringify({label:ST.groups[0].label,icon:ST.groups[0].icon}));}catch(e){}
+                db.collection("userGroups").doc(user.uid).set({
+                  groups:rebuiltGroups,
+                  updatedAt:firebase.firestore.FieldValue.serverTimestamp(),
+                  selfHealed:true
+                },{merge:true}).catch(function(){});
+              }
+              finishSignin();
+            }).catch(finishSignin);
           }
         }).catch(function(){
           ST.boarded=true;
