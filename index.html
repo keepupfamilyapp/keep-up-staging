@@ -1701,19 +1701,35 @@ function buildOnboarding(){
       var completeBtn=this;
       completeBtn.textContent="Setting things up...";completeBtn.style.background="#D4B8A8";
       // Write to Firestore - userGroups and member profile are both critical;
-      // if either fails, don't silently proceed into a broken state
-      Promise.all([
-        db.collection("userGroups").doc(uid).set({groups:grpsToSave,updatedAt:firebase.firestore.FieldValue.serverTimestamp()}),
-        db.collection("profiles").doc(uid).set({
-          name:ST.obName,av:safeAv
-        },{merge:true}),
-        db.collection("members").doc(uid+"_"+finalGrpId).set({
-          uid:uid,name:ST.obName,av:safeAv,
-          groupId:finalGrpId,groupLabel:ST.obGrpName,groupIcon:ST.obGrpEmoji,
-          isAdmin:!ST.joinInvite,
-          joinedAt:firebase.firestore.FieldValue.serverTimestamp()
-        })
-      ]).then(function(){
+      // if either fails, don't silently proceed into a broken state.
+      // When creating a brand-new group (not joining via invite), the
+      // members doc below gets written with isAdmin:true, and the security
+      // rules verify that against groups/{id}.adminUid - so that groups doc
+      // has to exist and land first, or the members write is correctly
+      // denied. Joining an existing group skips this entirely: isAdmin is
+      // false there, no admin check applies, and creating a groups doc here
+      // would incorrectly stomp on the real owner's document.
+      var createGroupDocFirst=ST.joinInvite
+        ? Promise.resolve()
+        : db.collection("groups").doc(finalGrpId).set({
+            id:finalGrpId,label:ST.obGrpName,icon:ST.obGrpEmoji,
+            adminUid:uid,adminName:ST.obName,
+            createdAt:firebase.firestore.FieldValue.serverTimestamp()
+          });
+      createGroupDocFirst.then(function(){
+        return Promise.all([
+          db.collection("userGroups").doc(uid).set({groups:grpsToSave,updatedAt:firebase.firestore.FieldValue.serverTimestamp()}),
+          db.collection("profiles").doc(uid).set({
+            name:ST.obName,av:safeAv
+          },{merge:true}),
+          db.collection("members").doc(uid+"_"+finalGrpId).set({
+            uid:uid,name:ST.obName,av:safeAv,
+            groupId:finalGrpId,groupLabel:ST.obGrpName,groupIcon:ST.obGrpEmoji,
+            isAdmin:!ST.joinInvite,
+            joinedAt:firebase.firestore.FieldValue.serverTimestamp()
+          })
+        ]);
+      }).then(function(){
         // Start app
         syncOn();
         fetchAllFeeds();
