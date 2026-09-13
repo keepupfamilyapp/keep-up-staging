@@ -1762,10 +1762,14 @@ function buildNoGroupsScreen(){
   var wrap=d({id:"app",css:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",padding:"32px 24px",height:"100vh",boxSizing:"border-box",background:"#FFF8F0"}});
   wrap.appendChild(d({css:{fontSize:"56px",marginBottom:"16px"}},"\uD83C\uDFE1"));
   wrap.appendChild(d({css:{fontFamily:"Lora,serif",fontSize:"22px",fontWeight:600,color:"#3D2314",marginBottom:"10px"}},"No family group found"));
-  wrap.appendChild(d({css:{fontSize:"14px",color:"#9B7B62",lineHeight:1.6,marginBottom:"24px",maxWidth:"320px"}},"You're signed in, but you're not currently part of a family group. This can happen if a group was removed or your invite is out of date."));
-  wrap.appendChild(makeBtn("Join or create a group",function(){
+  wrap.appendChild(d({css:{fontSize:"14px",color:"#9B7B62",lineHeight:1.6,marginBottom:"10px",maxWidth:"320px"}},"You're signed in, but you're not currently part of a family group. This can happen if a group was removed or your access changed."));
+  wrap.appendChild(d({css:{fontSize:"13px",color:"#C4714A",fontWeight:700,lineHeight:1.6,marginBottom:"24px",maxWidth:"320px"}},"If you have a family, the fastest fix is asking your group's admin for a fresh invite link - tapping it will get you straight back in."));
+  wrap.appendChild(makeBtn("Start a new group instead",function(){
+    // Deliberately NOT clearing ku_ob here - this person has already been
+    // through phone verification once, and clearing it would force a fresh
+    // invite link (if they get one after this) down the slow full-onboarding
+    // path instead of the fast rejoin path that already handles this case.
     ST.boarded=false;ST.obStep=0;ST.joinInvite=false;ST.obGrpName=null;
-    localStorage.removeItem("ku_ob");
     redraw();
   }));
   var signOutBtn=document.createElement("button");
