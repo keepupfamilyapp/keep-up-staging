@@ -1758,8 +1758,33 @@ function buildOnboarding(){
   return wrap;
 }
 
+function buildNoGroupsScreen(){
+  var wrap=d({id:"app",css:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",padding:"32px 24px",height:"100vh",boxSizing:"border-box",background:"#FFF8F0"}});
+  wrap.appendChild(d({css:{fontSize:"56px",marginBottom:"16px"}},"\uD83C\uDFE1"));
+  wrap.appendChild(d({css:{fontFamily:"Lora,serif",fontSize:"22px",fontWeight:600,color:"#3D2314",marginBottom:"10px"}},"No family group found"));
+  wrap.appendChild(d({css:{fontSize:"14px",color:"#9B7B62",lineHeight:1.6,marginBottom:"24px",maxWidth:"320px"}},"You're signed in, but you're not currently part of a family group. This can happen if a group was removed or your invite is out of date."));
+  wrap.appendChild(makeBtn("Join or create a group",function(){
+    ST.boarded=false;ST.obStep=0;ST.joinInvite=false;ST.obGrpName=null;
+    localStorage.removeItem("ku_ob");
+    redraw();
+  }));
+  var signOutBtn=document.createElement("button");
+  signOutBtn.textContent="Sign out";
+  signOutBtn.style.cssText="margin-top:14px;background:none;border:none;color:#9B7B62;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;text-decoration:underline;";
+  signOutBtn.addEventListener("click",function(){firebase.auth().signOut().then(function(){location.reload();});});
+  wrap.appendChild(signOutBtn);
+  return wrap;
+}
+
 function buildApp(){
   if(!ST.boarded)return buildOnboarding();
+  // ST.groups can legitimately end up empty - a group got deleted, access
+  // was revoked, self-heal found nothing to rebuild from. Every version of
+  // tonight's "Cannot read properties of undefined (reading 'icon')" crash
+  // traces back to this exact spot assuming a group always exists once
+  // someone's boarded. Whatever emptied the list, show a real recovery
+  // screen instead of a blank crash.
+  if(!ST.groups||ST.groups.length===0)return buildNoGroupsScreen();
   var t=th(ST.group);
   var grp=ST.groups.find(function(g){return g.id===ST.group;})||ST.groups[0];
   var wrap=d({id:"app",css:{background:t.bg}});
