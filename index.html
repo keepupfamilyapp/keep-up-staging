@@ -3912,8 +3912,13 @@ function buildProfile(t){
       ov.remove();
       var uid=currentUser?currentUser.uid:null;
       if(uid){
-        // Delete Firestore data
-        db.collection("members").doc(uid).delete().catch(function(){});
+        // Delete Firestore data. Membership docs are keyed "{uid}_{groupId}",
+        // not bare uid - the old members.doc(uid).delete() below always
+        // targeted a doc that never existed, so it silently did nothing and
+        // every group membership stuck around after "deleting" the account.
+        (ST.groups||[]).forEach(function(g){
+          db.collection("members").doc(uid+"_"+g.id).delete().catch(function(){});
+        });
         db.collection("userGroups").doc(uid).delete().catch(function(){});
         db.collection("fcmTokens").doc(uid).delete().catch(function(){});
         // Delete Firebase Auth account
