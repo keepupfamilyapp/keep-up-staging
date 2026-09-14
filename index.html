@@ -3046,6 +3046,10 @@ function buildChatView(t,grp){
           }
         },{passive:true});
         el.addEventListener("touchend",function(){if(pressTimer){clearTimeout(pressTimer);pressTimer=null;}},{passive:true});
+        // Desktop/mouse fallback - touchstart/touchmove above never fire on a
+        // mouse-only device, so without this there was no way to react to a
+        // chat message at all from a laptop/desktop browser.
+        el.addEventListener("contextmenu",function(ev){ev.preventDefault();showReactionPicker(mid,el,isYou,ev.clientY,ev.clientX);});
       })(bubbleEl,msgId,iy,msg);
     }
     if(rxs.length){
@@ -3947,7 +3951,7 @@ function buildAddEvent(t){
     var savedDay=parseInt(ST.nEv.day)||ST.calSelDay;
     var origLabel=sub.textContent;
     sub.textContent="Adding...";sub.disabled=true;sub.style.opacity=".7";
-    var ev={month:ST.nEv.month,day:parseInt(ST.nEv.day)||1,year:ST.nEv.year||ST.calYear,title:ST.nEv.title.trim(),group:gObj.label,groupId:ST.nEv.groupId,going:1,maybe:0,time:ST.nEv.time,loc:ST.nEv.loc,createdBy:currentUser.uid};
+    var ev={month:ST.nEv.month,day:parseInt(ST.nEv.day)||1,year:ST.nEv.year||ST.calYear,title:ST.nEv.title.trim(),group:gObj.label,groupId:gObj.id,going:1,maybe:0,time:ST.nEv.time,loc:ST.nEv.loc,createdBy:currentUser.uid};
     // Write to Firestore instead of only local state - the "events" listener
     // set up in doSync() picks this up in real time and adds it to ST.evs,
     // so it shows up for everyone (including this device on next load)
