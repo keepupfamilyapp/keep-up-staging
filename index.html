@@ -1081,6 +1081,22 @@ function el(tag,attrs,children){
 }
 function d(a,c){return el("div",a,c);}
 function b(a,c){return el("button",a,c);}
+// Fills a group-icon container with the uploaded group photo when the group
+// has one, falling back to the emoji icon otherwise. Every place in the app
+// that shows a group's icon should go through this - previously each spot
+// only ever rendered g.icon as text, so a group photo saved fine (Edit Group
+// itself showed it) but never actually appeared anywhere else in the app.
+function setGroupIcon(container,g){
+  container.textContent="";
+  if(g&&g.photo){
+    var img=document.createElement("img");
+    img.src=g.photo;
+    img.style.cssText="width:100%;height:100%;object-fit:cover;border-radius:50%;";
+    container.appendChild(img);
+  } else {
+    container.textContent=g?g.icon:"";
+  }
+}
 
 function isAdmin(){
   try{return localStorage.getItem("ku_admin")==="1";}catch(e){return false;}
@@ -1837,7 +1853,7 @@ function buildApp(){
   var bar=d({css:{background:t.cb,padding:"9px 14px 8px",display:"flex",alignItems:"center",justifyContent:"space-between",borderBottom:"1px solid "+t.ap,flexShrink:0,position:"relative"}});
   bar.appendChild(d({html:"keep <em>up</em>",css:{fontFamily:"Lora,serif",fontSize:"18px",fontWeight:600,color:t.a,flexShrink:0}}));
   var grpBtn=b({css:{position:"absolute",left:"50%",transform:"translateX(-50%)",display:"flex",alignItems:"center",gap:"6px",padding:"5px 13px",borderRadius:"50px",background:t.ap,border:"1.5px solid "+t.al,fontSize:"13px",fontWeight:800,color:t.ad,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}});
-  var grpIc=d({css:{fontSize:"14px"}});grpIc.textContent=grp.icon;grpBtn.appendChild(grpIc);
+  var grpIc=d({css:{width:"16px",height:"16px",borderRadius:"50%",overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"14px",flexShrink:0}});setGroupIcon(grpIc,grp);grpBtn.appendChild(grpIc);
   grpBtn.appendChild(document.createTextNode(grp.label));
   if(ST.groups.length>1)grpBtn.appendChild(d({css:{fontSize:"10px",marginLeft:"2px",opacity:".7"}},"\u25BE"));
   // Feed unread badge on group button
@@ -2715,7 +2731,7 @@ function buildChat(t){
   ST.groups.forEach(function(g){
     var gt=th(g.id);var msgs=ST.chatMsgs[g.id]||[];var last=msgs[msgs.length-1];
     var row=d({css:{display:"flex",alignItems:"center",gap:"10px",padding:"11px 12px",borderRadius:"15px",background:gt.cb,border:"1.5px solid "+gt.ap,cursor:"pointer",marginBottom:"7px"}});
-    var ic=d({css:{width:"44px",height:"44px",borderRadius:"50%",background:gt.ap,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"22px",flexShrink:0,border:"2px solid "+gt.al}});ic.textContent=g.icon;row.appendChild(ic);
+    var ic=d({css:{width:"44px",height:"44px",borderRadius:"50%",background:gt.ap,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"22px",flexShrink:0,border:"2px solid "+gt.al,overflow:"hidden"}});setGroupIcon(ic,g);row.appendChild(ic);
     var gd=d({css:{flex:1,minWidth:0}});
     var gtop=d({css:{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:"6px"}});
     gtop.appendChild(d({css:{fontSize:"14px",fontWeight:700,color:"#3D2314"}},g.label));
@@ -2779,7 +2795,7 @@ function buildChatView(t,grp){
   var msgs=dm?dm.msgs:(ST.chatMsgs[grp.id]||[]);
   var dmNames=dm?(dm.members||[]).map(function(m){return m.name||"Family member";}).filter(Boolean):[];
   var chatName=dm?(dmNames.length?dmNames.join(", "):"Direct message"):grp.label;
-  var chatIcon=dm?(dm.members&&dm.members[0]&&dm.members[0].av)||"\uD83D\uDC64":grp.icon;
+  var chatIcon=dm?(dm.members&&dm.members[0]&&dm.members[0].av)||"\uD83D\uDC64":(grp.photo||grp.icon);
   var chatSub=dm?(dm.members&&dm.members.length>1?"Group DM":"Direct message"):((ST.mems[grp.id]||[]).length+" members");
   var cid=ST.openChat;
   // Clear unread for this chat now that it's open
@@ -3428,7 +3444,7 @@ function buildCal(t){
   ST.groups.forEach(function(g){
     var gt=th(g.id);var gevs=ST.evs.filter(function(ev){return ev.groupId===g.id;});if(!gevs.length)return;hasAny=true;
     var gl=d({css:{display:"flex",alignItems:"center",gap:"7px",marginBottom:"8px",marginTop:"4px"}});
-    var gi=d({css:{width:"22px",height:"22px",borderRadius:"50%",background:gt.ap,border:"1.5px solid "+gt.al,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"12px"}});gi.textContent=g.icon;gl.appendChild(gi);
+    var gi=d({css:{width:"22px",height:"22px",borderRadius:"50%",background:gt.ap,border:"1.5px solid "+gt.al,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"12px",overflow:"hidden"}});setGroupIcon(gi,g);gl.appendChild(gi);
     gl.appendChild(d({css:{fontSize:"12px",fontWeight:800,color:gt.ad,textTransform:"uppercase",letterSpacing:".5px"}},g.label));
     upcoming.appendChild(gl);gevs.forEach(function(ev){upcoming.appendChild(buildEvCard(ev,gt));});
   });
@@ -3555,7 +3571,7 @@ function buildProfile(t){
   ST.groups.forEach(function(g){
     var gt=th(g.id);var mems=ST.mems[g.id]||[];
     var row=d({css:{display:"flex",alignItems:"center",gap:"10px",padding:"11px 15px",borderBottom:"1px solid #F5DDD1"}});
-    var ic=d({css:{width:"38px",height:"38px",borderRadius:"50%",background:gt.ap,border:"2px solid "+gt.al,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"19px",flexShrink:0}});ic.textContent=g.icon;row.appendChild(ic);
+    var ic=d({css:{width:"38px",height:"38px",borderRadius:"50%",background:gt.ap,border:"2px solid "+gt.al,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"19px",flexShrink:0,overflow:"hidden"}});setGroupIcon(ic,g);row.appendChild(ic);
     var info=d({css:{flex:1}});info.appendChild(d({css:{fontSize:"14px",fontWeight:700,color:"#3D2314"}},g.label));
     var fbMems=(ST.fbMembers&&ST.fbMembers[g.id])||[];
     var memCount=Math.max(mems.length,fbMems.length);
@@ -3619,7 +3635,7 @@ function buildProfile(t){
     if(!isAdmin())return; // Only admins can invite
     var gt=th(g.id);
     var row=d({css:{display:"flex",alignItems:"center",gap:"10px",marginBottom:"10px"}});
-    var ic=d({css:{width:"34px",height:"34px",borderRadius:"50%",background:gt.ap,border:"1.5px solid "+gt.al,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"17px",flexShrink:0}});ic.textContent=g.icon;row.appendChild(ic);
+    var ic=d({css:{width:"34px",height:"34px",borderRadius:"50%",background:gt.ap,border:"1.5px solid "+gt.al,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"17px",flexShrink:0,overflow:"hidden"}});setGroupIcon(ic,g);row.appendChild(ic);
     var info=d({css:{flex:1,minWidth:0}});
     info.appendChild(d({css:{fontSize:"13px",fontWeight:700,color:"#3D2314"}},g.label));
     info.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"1px"}},isAdmin()?"Tap to copy invite link":"Share this link to invite family"));
