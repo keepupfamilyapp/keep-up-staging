@@ -55,6 +55,7 @@ img{-webkit-touch-callout:none;-webkit-user-select:none;}
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -108,6 +109,35 @@ window.addEventListener("unhandledrejection",function(e){
   if(d){d.style.display="block";d.innerHTML+="<div style='margin-bottom:4px'>ERROR: "+msg+"</div>";}
   logErrorRemote({message:msg,stack:e.reason&&e.reason.stack});
 });
+
+// Update detection - a tab left open across a deploy keeps running its
+// already-loaded JS against a live backend that may have moved on (new
+// fields, new expectations), which is a likely contributor to the
+// "undefined"/where()-crash reports some users hit after a recent deploy.
+// This polls the live page for a newer APP_VERSION and offers a one-tap
+// refresh instead of leaving people stuck in a stale session. Bump
+// APP_VERSION by hand on every deploy (any changed string works - a
+// timestamp is easiest to keep unique).
+var APP_VERSION="2026-09-14T20:26:48Z";
+function checkForUpdate(){
+  fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
+    .then(function(r){return r.text();})
+    .then(function(html){
+      var m=html.match(/var APP_VERSION="2026-09-14T20:26:48Z"]+)"/);
+      if(m&&m[1]&&m[1]!==APP_VERSION)showUpdateBanner();
+    }).catch(function(){/* offline, or the request was blocked - just skip this check, try again next interval */});
+}
+function showUpdateBanner(){
+  if(document.getElementById("update-banner"))return;
+  var bar=document.createElement("div");
+  bar.id="update-banner";
+  bar.style.cssText="position:fixed;top:0;left:0;right:0;z-index:9998;background:#3D2314;color:white;padding:11px 16px;text-align:center;font-family:Nunito,sans-serif;font-size:13px;font-weight:700;cursor:pointer;";
+  bar.textContent="A new version of Keep Up is ready — tap to refresh";
+  bar.addEventListener("click",function(){location.reload();});
+  document.body.appendChild(bar);
+}
+setInterval(function(){if(document.visibilityState==="visible")checkForUpdate();},5*60*1000);
+document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible")checkForUpdate();});
 </script>
 <script>
 // Firebase init - automatically uses staging config when running on the
@@ -147,6 +177,7 @@ db.enablePersistence({synchronizeTabs:true}).catch(function(err){
 });
 var storage=firebase.storage();
 var auth=firebase.auth();
+var functions=firebase.functions();
 var messaging=null;
 try{messaging=firebase.messaging();}catch(e){console.log("Messaging not supported:",e);}
 var currentUser=null;
@@ -1579,9 +1610,20 @@ function buildOnboarding(){
                   redraw();
                 }
                 if(hasGroups){
-                  db.collection("members").where("uid","==",result.user.uid).get().then(function(mSnap){
-                    var isAdminAnywhere=false;
-                    mSnap.forEach(function(mdoc){if(mdoc.data().isAdmin)isAdminAnywhere=true;});
+                  // Was a where("uid","==",...) query across the whole members
+                  // collection - Firestore's security rules can deny that kind
+                  // of list query even when a plain get() on the very same
+                  // document succeeds (evaluating "isMember" for an unknown
+                  // set of query results needs more than the rules can prove
+                  // up front). That silently failed for every admin and left
+                  // ku_admin unset, showing real admins as plain members.
+                  // Fetching each of the user's own known groups by exact doc
+                  // id instead is a plain get() every time, which always works.
+                  var _adminCheckGids=(ST.groups||[]).map(function(g){return g.id;});
+                  Promise.all(_adminCheckGids.map(function(gid){
+                    return db.collection("members").doc(result.user.uid+"_"+gid).get().catch(function(){return null;});
+                  })).then(function(mdocs){
+                    var isAdminAnywhere=mdocs.some(function(md){return md&&md.exists&&md.data().isAdmin;});
                     localStorage.setItem("ku_admin",isAdminAnywhere?"1":"0");
                     finishRestore();
                   }).catch(finishRestore);
@@ -5074,9 +5116,15 @@ auth.onAuthStateChanged(function(user){
             redraw();
           }
           if(hasGroups){
-            db.collection("members").where("uid","==",user.uid).get().then(function(mSnap){
-              var isAdminAnywhere=false;
-              mSnap.forEach(function(mdoc){if(mdoc.data().isAdmin)isAdminAnywhere=true;});
+            // See the matching comment above (auth restore path) - a
+            // where("uid",...) query gets denied by the security rules even
+            // though a plain get() on the same doc succeeds, so this fetches
+            // each known group's membership doc directly by id instead.
+            var _adminCheckGids2=(ST.groups||[]).map(function(g){return g.id;});
+            Promise.all(_adminCheckGids2.map(function(gid){
+              return db.collection("members").doc(user.uid+"_"+gid).get().catch(function(){return null;});
+            })).then(function(mdocs){
+              var isAdminAnywhere=mdocs.some(function(md){return md&&md.exists&&md.data().isAdmin;});
               localStorage.setItem("ku_admin",isAdminAnywhere?"1":"0");
               finishSignin();
             }).catch(finishSignin);
@@ -5089,30 +5137,25 @@ auth.onAuthStateChanged(function(user){
             // silently reconstruct userGroups from them - the same repair
             // that's had to be done by hand in the Firestore console for
             // several real users so far.
-            db.collection("members").where("uid","==",user.uid).get().then(function(mSnap){
-              var isAdminAnywhere=false;
-              var rebuiltGroups=[];
-              mSnap.forEach(function(mdoc){
-                var m=mdoc.data();
-                if(m.isAdmin)isAdminAnywhere=true;
-                if(m.groupId&&!rebuiltGroups.find(function(g){return g.id===m.groupId;})){
-                  rebuiltGroups.push({id:m.groupId,label:m.groupLabel||"Family",icon:m.groupIcon||"\u2764\uFE0F"});
-                }
-              });
+            // This used to run the same where("uid","==",...) query as the
+            // admin check above, hitting the identical Firestore restriction
+            // (a list/query request can be denied even though a get() on the
+            // same doc succeeds) - meaning this repair path likely never
+            // actually worked for anyone who needed it. The Admin SDK on the
+            // server isn't subject to that restriction, so the lookup itself
+            // now happens in the rebuildUserGroups Cloud Function instead.
+            functions.httpsCallable("rebuildUserGroups")().then(function(result){
+              var rebuiltGroups=(result.data&&result.data.groups)||[];
+              var isAdminAnywhere=!!(result.data&&result.data.isAdmin);
               localStorage.setItem("ku_admin",isAdminAnywhere?"1":"0");
               if(rebuiltGroups.length>0){
                 ST.groups=rebuiltGroups;
                 ST.group=ST.groups[0].id;
                 try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
                 try{localStorage.setItem("ku_grp",JSON.stringify({label:ST.groups[0].label,icon:ST.groups[0].icon}));}catch(e){}
-                db.collection("userGroups").doc(user.uid).set({
-                  groups:rebuiltGroups,
-                  updatedAt:firebase.firestore.FieldValue.serverTimestamp(),
-                  selfHealed:true
-                },{merge:true}).catch(function(){});
               }
               finishSignin();
-            }).catch(finishSignin);
+            }).catch(function(e){console.log("rebuildUserGroups failed",e);finishSignin();});
           }
         }).catch(function(){
           ST.boarded=true;
