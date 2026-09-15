@@ -118,12 +118,12 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-09-14T21:58:18Z";
+var APP_VERSION="2026-09-14T22:25:20Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
     .then(function(html){
-      var m=html.match(/var APP_VERSION="2026-09-14T21:58:18Z"]+)"/);
+      var m=html.match(/var APP_VERSION="2026-09-14T22:25:20Z"]+)"/);
       if(m&&m[1]&&m[1]!==APP_VERSION)showUpdateBanner();
     }).catch(function(){/* offline, or the request was blocked - just skip this check, try again next interval */});
 }
@@ -2347,11 +2347,20 @@ function buildFeed(t,grp){
   function handlePhoto(f){
     hideAll();
     ST.upType="photo";ST.upIsVideo=false;ST.upVideoFile=null;ST.upStep=2;ST.upCap="";
-    var r=new FileReader();r.onload=function(e){ST.upImg=e.target.result;ST.upOpen=true;redraw();};r.readAsDataURL(f);
+    var r=new FileReader();r.onload=function(e){
+      ST.upImg=e.target.result;
+      // The "Add Photos" step-2 screen gates its Share button on
+      // ST.upPhotos (the array multi-photo posting reads from), not on
+      // ST.upImg - without this, a photo picked from here never counts
+      // as chosen and the user is forced to pick it again via "Choose
+      // Photos" on the next screen.
+      ST.upPhotos=[{dataUrl:e.target.result,file:f}];
+      ST.upOpen=true;redraw();
+    };r.readAsDataURL(f);
   }
   function handleVideo(f){
     hideAll();
-    ST.upType="photo";ST.upIsVideo=true;ST.upVideoFile=f;ST.upStep=2;ST.upCap="";
+    ST.upType="photo";ST.upIsVideo=true;ST.upVideoFile=f;ST.upStep=2;ST.upCap="";ST.upPhotos=[];
     // Don't read video into memory - go straight to upload step
     // Capture first frame as thumbnail
     var thumbVid=document.createElement("video");
