@@ -118,12 +118,12 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-09-17T22:42:04Z";
+var APP_VERSION="2026-09-17T23:16:16Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
     .then(function(html){
-      var m=html.match(/var APP_VERSION="2026-09-17T22:42:04Z"]+)"/);
+      var m=html.match(/var APP_VERSION="2026-09-17T23:16:16Z"]+)"/);
       if(m&&m[1]&&m[1]!==APP_VERSION)showUpdateBanner();
     }).catch(function(){/* offline, or the request was blocked - just skip this check, try again next interval */});
 }
@@ -2795,19 +2795,41 @@ function buildCheckinCard(item,t){
 // (the card's own item.id is a synthetic "evrem-"+evId so it doesn't
 // collide with the birthday/checkin/photo ids already in the feed) - RSVP
 // state is keyed on evId so it stays in sync with the Calendar tab.
+// "Minimal Row" - the option picked after reviewing four mockups
+// (calendar-card-concepts artifact). Compact enough to show in the feed
+// every day of a multi-day event without getting old. Tapping the row
+// jumps to that day in the Calendar tab for full detail (time, location,
+// other events that day); the small circle toggles RSVP right here without
+// leaving the feed - stopPropagation keeps that tap from also triggering
+// the row's own navigation.
 function buildEventCard(item){
-  var card=d({css:{background:"linear-gradient(135deg,#FFF3D9,#FBF0D0)",border:"none",borderBottom:"2px solid #E8C878",padding:"14px 16px",display:"flex",gap:"12px",alignItems:"center"}});
-  var ic=d({css:{fontSize:"36px",flexShrink:0}});ic.textContent="📅";card.appendChild(ic);
-  var bd=d({css:{flex:1}});
-  bd.appendChild(d({css:{fontSize:"14px",fontWeight:800,color:"#7A5A14"}},item.title));
-  var when=item.totalDays>1?("Day "+item.dayIndex+" of "+item.totalDays):("Today"+(item.time?" at "+item.time:""));
-  if(item.loc)when+=" — "+item.loc;
-  bd.appendChild(d({css:{fontSize:"12px",color:"#9B7B62",marginBottom:"9px"}},when));
-  var acts=d({css:{display:"flex",gap:"8px"}});
-  var gb=b({css:{flex:1,padding:"8px",borderRadius:"50px",border:"2px solid #D4922A",background:ST.rsvp[item.evId]?"#D4922A":"transparent",fontSize:"12px",fontWeight:700,color:ST.rsvp[item.evId]?"white":"#D4922A",cursor:"pointer",fontFamily:"inherit"}},ST.rsvp[item.evId]?"Going!":"I'll Be There");
-  gb.addEventListener("click",function(){ST.rsvp[item.evId]=!ST.rsvp[item.evId];syncRsvp(item.evId,ST.rsvp[item.evId],item.groupId);redraw();});acts.appendChild(gb);
-  acts.appendChild(b({css:{flex:1,padding:"8px",borderRadius:"50px",border:"2px solid #D4922A",background:"transparent",fontSize:"12px",fontWeight:700,color:"#D4922A",cursor:"pointer",fontFamily:"inherit"}},"Maybe"));
-  bd.appendChild(acts);card.appendChild(bd);
+  var card=d({css:{display:"flex",alignItems:"center",gap:"10px",padding:"9px 16px",background:"#FDF8EE",borderBottom:"1px solid #F0E4CF",cursor:"pointer"}});
+  card.addEventListener("click",function(){
+    var s=evStartDate(item);
+    ST.tab="calendar";ST.memoryDay=null;
+    ST.calMonth=s.getMonth();ST.calYear=s.getFullYear();
+    // Land on *today* within the event's range, not its start day - that's
+    // the day this particular reminder is actually about.
+    var now=new Date();
+    ST.calSelDay=(now.getMonth()===ST.calMonth&&now.getFullYear()===ST.calYear)?now.getDate():s.getDate();
+    redraw();
+  });
+  card.appendChild(d({css:{width:"8px",height:"8px",borderRadius:"50%",background:"#D4922A",flexShrink:0}}));
+  var body=d({css:{flex:1,minWidth:0,display:"flex",alignItems:"baseline",gap:"6px",overflow:"hidden"}});
+  body.appendChild(d({css:{fontSize:"12.5px",fontWeight:800,color:"#3D2314",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}},item.title));
+  var sub=item.totalDays>1?("Day "+item.dayIndex+"/"+item.totalDays):(item.time||"Today");
+  if(item.loc)sub+=" · "+item.loc;
+  body.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",whiteSpace:"nowrap",flexShrink:0}},sub));
+  card.appendChild(body);
+  var going=!!ST.rsvp[item.evId];
+  var rsvp=d({css:{flexShrink:0,width:"26px",height:"26px",borderRadius:"50%",border:"1.5px solid #D4922A",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"13px",color:going?"white":"#7A5A14",background:going?"#D4922A":"transparent",cursor:"pointer"}},going?"✓":"+");
+  rsvp.addEventListener("click",function(e){
+    e.stopPropagation();
+    ST.rsvp[item.evId]=!ST.rsvp[item.evId];
+    syncRsvp(item.evId,ST.rsvp[item.evId],item.groupId);
+    redraw();
+  });
+  card.appendChild(rsvp);
   return card;
 }
 
@@ -4114,21 +4136,27 @@ function buildAddEvent(t){
   var ds=el("input",{type:"number",placeholder:"Day",css:{flex:1,padding:"11px 12px",borderRadius:"12px",border:"1.5px solid #F5DDD1",background:"#FAF6F0",fontSize:"13px",color:"#3D2314",outline:"none",fontFamily:"inherit"}});
   ds.value=ST.nEv.day||"";ds.addEventListener("input",function(){ST.nEv.day=this.value;});
   row.appendChild(ms);row.appendChild(ds);sh.appendChild(row);
-  var mdRow=d({css:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"12px"}});
-  var mdCheck=el("input",{type:"checkbox"});
-  mdCheck.checked=!!ST.nEv.multiDay;
-  mdCheck.style.cssText="width:18px;height:18px;accent-color:"+t.a+";cursor:pointer;";
-  mdCheck.addEventListener("click",function(){
-    ST.nEv.multiDay=this.checked;
+  // A pill switch matching the toggles already used on the Profile screen
+  // (buildSimpleToggle) instead of a bare HTML checkbox - a raw checkbox
+  // renders with the browser/OS's own default styling, which stands out
+  // badly against this app's custom rounded controls everywhere else.
+  var mdRow=d({css:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"14px"}});
+  mdRow.appendChild(d({css:{fontSize:"13px",fontWeight:700,color:"#6B4C35"}},"This is a multi-day event"));
+  var mdOn=!!ST.nEv.multiDay;
+  var mdToggle=d({css:{width:"42px",height:"24px",borderRadius:"50px",background:mdOn?t.a:"#E8DDD3",position:"relative",cursor:"pointer",transition:"background .2s",flexShrink:0}});
+  var mdKnob=d({css:{width:"18px",height:"18px",borderRadius:"50%",background:"white",position:"absolute",top:"3px",left:mdOn?"21px":"3px",transition:"left .2s",boxShadow:"0 1px 3px rgba(0,0,0,.2)"}});
+  mdToggle.appendChild(mdKnob);
+  mdToggle.addEventListener("click",function(){
+    ST.nEv.multiDay=!ST.nEv.multiDay;
+    var nowOn=ST.nEv.multiDay;
+    mdToggle.style.background=nowOn?t.a:"#E8DDD3";
+    mdKnob.style.left=nowOn?"21px":"3px";
     // Pre-fill "Ends" with the start date so the user is editing where it
     // ends, not typing a whole second date from scratch.
-    if(this.checked&&!ST.nEv.endDay){ST.nEv.endMonth=ST.nEv.month;ST.nEv.endDay=ST.nEv.day;}
+    if(nowOn&&!ST.nEv.endDay){ST.nEv.endMonth=ST.nEv.month;ST.nEv.endDay=ST.nEv.day;}
     redraw();
   });
-  mdRow.appendChild(mdCheck);
-  var mdLabel=d({css:{fontSize:"13px",fontWeight:700,color:"#6B4C35",cursor:"pointer"}},"This is a multi-day event");
-  mdLabel.addEventListener("click",function(){mdCheck.click();});
-  mdRow.appendChild(mdLabel);
+  mdRow.appendChild(mdToggle);
   sh.appendChild(mdRow);
   if(ST.nEv.multiDay){
     sh.appendChild(d({css:{fontSize:"11px",fontWeight:800,color:"#9B7B62",textTransform:"uppercase",letterSpacing:".4px",marginBottom:"5px"}},"Ends"));
