@@ -118,12 +118,12 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-09-14T22:25:20Z";
+var APP_VERSION="2026-09-17T22:23:17Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
     .then(function(html){
-      var m=html.match(/var APP_VERSION="2026-09-14T22:25:20Z"]+)"/);
+      var m=html.match(/var APP_VERSION="2026-09-17T22:23:17Z"]+)"/);
       if(m&&m[1]&&m[1]!==APP_VERSION)showUpdateBanner();
     }).catch(function(){/* offline, or the request was blocked - just skip this check, try again next interval */});
 }
@@ -1073,7 +1073,7 @@ var ST={
   dms:[],
   newDm:false,dmSel:[],dmGrp:"imm",
   addEv:false,calMonth:new Date().getMonth(),calYear:new Date().getFullYear(),calSelDay:null,
-  nEv:{title:"",month:"APR",day:"",time:"",loc:"",groupId:"imm"},
+  nEv:{title:"",month:"APR",day:"",time:"",loc:"",groupId:"imm",multiDay:false,endMonth:"APR",endDay:""},
   compose:false,upOpen:false,upType:"photo",upStep:1,upCap:"",upCi:"",upImg:null,
   cmtOpen:null,cmtIn:"",rxPick:null,reactions:{},rsvp:{},
   comments:{},
@@ -1357,6 +1357,41 @@ function timeAgo(ts){
 // the file's sort callbacks. One shared helper now, so a future format
 // change (or bug fix) only has to happen once.
 function tsMillis(ts){return ts&&ts.toMillis?ts.toMillis():0;}
+
+// Calendar events store month/day/year as separate fields (matching the Add
+// Event form) rather than a single Date, and can optionally span multiple
+// days via endMonth/endDay/endYear (a trip, a reunion weekend) - older
+// events and single-day events simply have no end fields, which these
+// helpers treat as ending the same day they start. Centralized here so the
+// month grid, the day panel, and the feed's day-of reminder all agree on
+// what "today falls inside this event" means.
+var EVENT_MONTHS=["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+function evStartDate(ev){
+  var mi=EVENT_MONTHS.indexOf(ev.month);
+  return new Date(ev.year||2026,mi<0?0:mi,ev.day||1);
+}
+function evEndDate(ev){
+  if(ev.endMonth&&ev.endDay){
+    var mi=EVENT_MONTHS.indexOf(ev.endMonth);
+    var e=new Date(ev.endYear||ev.year||2026,mi<0?0:mi,ev.endDay);
+    var s=evStartDate(ev);
+    if(e<s)return s; // guard against an end date typo'd before the start
+    return e;
+  }
+  return evStartDate(ev);
+}
+function evContainsDate(ev,date){
+  var s=evStartDate(ev),e=evEndDate(ev);
+  return date>=s&&date<=e;
+}
+// 1-based day index into the event and its total day count, e.g. the
+// second day of a 4-day trip returns {dayIndex:2,totalDays:4}.
+function evDayInfo(ev,date){
+  var s=evStartDate(ev),e=evEndDate(ev);
+  var totalDays=Math.round((e-s)/86400000)+1;
+  var dayIndex=Math.round((date-s)/86400000)+1;
+  return {dayIndex:dayIndex,totalDays:totalDays};
+}
 
 // members/comments/reactions/rsvps/events listeners in doSync() all queried
 // their collection scoped to the user's groups and reported errors through
@@ -2181,8 +2216,31 @@ function injectBirthdays(){
   });
 }
 
+// Same idea as injectBirthdays() - recomputed client-side on every feed
+// render, nothing written to Firestore - but for calendar events: any
+// event whose date range includes today gets a reminder card unshifted to
+// the top of its group's feed, so people notice it without having to open
+// the Calendar tab. A multi-day event (evEndDate > evStartDate) keeps
+// showing every day it's in progress, not just its first day.
+function injectEvents(){
+  if(!ST.evs||!ST.evs.length)return;
+  var now=new Date();var today=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  ST.evs.forEach(function(ev){
+    if(!evContainsDate(ev,today))return;
+    var gid=ev.groupId;
+    if(!gid)return;
+    if(!ST.feed[gid])ST.feed[gid]=[];
+    ST.feed[gid]=ST.feed[gid].filter(function(item){return item.evId!==ev.id;});
+    var info=evDayInfo(ev,today);
+    ST.feed[gid].unshift(Object.assign({},ev,{
+      id:"evrem-"+ev.id,evId:ev.id,type:"event",dayIndex:info.dayIndex,totalDays:info.totalDays
+    }));
+  });
+}
+
 function buildFeed(t,grp){
   injectBirthdays();
+  injectEvents();
   var wrap=d({css:{display:"flex",flexDirection:"column",flex:1,overflow:"hidden",minHeight:0}});
 
   // Pull to refresh indicator
@@ -2730,18 +2788,26 @@ function buildCheckinCard(item,t){
   return card;
 }
 
+// A same-day reminder card, injected into the feed by injectEvents() for
+// any calendar event whose date range includes today - not a permanent
+// Firestore post (nothing is written when an event is created), same as
+// the birthday cards above. item.evId is the real event's Firestore id
+// (the card's own item.id is a synthetic "evrem-"+evId so it doesn't
+// collide with the birthday/checkin/photo ids already in the feed) - RSVP
+// state is keyed on evId so it stays in sync with the Calendar tab.
 function buildEventCard(item){
-  var card=d({css:{background:"#FBF0D9",border:"none",borderBottom:"2px solid #E8C878",padding:"13px 16px"}});
-  var hdr=d({css:{display:"flex",alignItems:"center",gap:"10px",marginBottom:"8px"}});
-  var dt=d({css:{width:"44px",height:"44px",borderRadius:"12px",background:"#D4922A",color:"white",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}});
-  dt.appendChild(d({css:{fontSize:"8px",fontWeight:700,letterSpacing:"1px",textTransform:"uppercase"}},item.month));
-  dt.appendChild(d({css:{fontSize:"18px",fontWeight:700,lineHeight:"1"}},String(item.day)));
-  hdr.appendChild(dt);var inf=d();inf.appendChild(d({css:{fontSize:"14px",fontWeight:700,color:"#3D2314"}},item.title));inf.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"2px"}},item.who));hdr.appendChild(inf);card.appendChild(hdr);
+  var card=d({css:{background:"linear-gradient(135deg,#FFF3D9,#FBF0D0)",border:"none",borderBottom:"2px solid #E8C878",padding:"14px 16px",display:"flex",gap:"12px",alignItems:"center"}});
+  var ic=d({css:{fontSize:"36px",flexShrink:0}});ic.textContent="📅";card.appendChild(ic);
+  var bd=d({css:{flex:1}});
+  bd.appendChild(d({css:{fontSize:"14px",fontWeight:800,color:"#7A5A14"}},item.title));
+  var when=item.totalDays>1?("Day "+item.dayIndex+" of "+item.totalDays):("Today"+(item.time?" at "+item.time:""));
+  if(item.loc)when+=" — "+item.loc;
+  bd.appendChild(d({css:{fontSize:"12px",color:"#9B7B62",marginBottom:"9px"}},when));
   var acts=d({css:{display:"flex",gap:"8px"}});
-  var gb=b({css:{flex:1,padding:"8px",borderRadius:"50px",border:"2px solid #D4922A",background:ST.rsvp[item.id]?"#D4922A":"transparent",fontSize:"12px",fontWeight:700,color:ST.rsvp[item.id]?"white":"#D4922A",cursor:"pointer",fontFamily:"inherit"}},ST.rsvp[item.id]?"Going!":"I'll Be There");
-  gb.addEventListener("click",function(){ST.rsvp[item.id]=!ST.rsvp[item.id];syncRsvp(item.id,ST.rsvp[item.id],item.groupId);redraw();});acts.appendChild(gb);
+  var gb=b({css:{flex:1,padding:"8px",borderRadius:"50px",border:"2px solid #D4922A",background:ST.rsvp[item.evId]?"#D4922A":"transparent",fontSize:"12px",fontWeight:700,color:ST.rsvp[item.evId]?"white":"#D4922A",cursor:"pointer",fontFamily:"inherit"}},ST.rsvp[item.evId]?"Going!":"I'll Be There");
+  gb.addEventListener("click",function(){ST.rsvp[item.evId]=!ST.rsvp[item.evId];syncRsvp(item.evId,ST.rsvp[item.evId],item.groupId);redraw();});acts.appendChild(gb);
   acts.appendChild(b({css:{flex:1,padding:"8px",borderRadius:"50px",border:"2px solid #D4922A",background:"transparent",fontSize:"12px",fontWeight:700,color:"#D4922A",cursor:"pointer",fontFamily:"inherit"}},"Maybe"));
-  card.appendChild(acts);
+  bd.appendChild(acts);card.appendChild(bd);
   return card;
 }
 
@@ -3428,7 +3494,19 @@ function buildCal(t){
   var daysInMonth=new Date(ST.calYear,ST.calMonth+1,0).getDate();
   var today=new Date();var todayDay=(today.getMonth()===ST.calMonth&&today.getFullYear()===ST.calYear)?today.getDate():null;
   var evByDay={};
-  ST.evs.forEach(function(ev){var evM=MSHORT.indexOf(ev.month);if(evM===ST.calMonth&&(ev.year===ST.calYear||(!ev.year&&ST.calYear===2026))){if(!evByDay[ev.day])evByDay[ev.day]=[];evByDay[ev.day].push(ev);}});
+  // Walk every day the event actually spans (not just its start day) so a
+  // multi-day trip shows a dot, and shows up in the day panel, on every day
+  // it covers - including days in a different month than it started in.
+  ST.evs.forEach(function(ev){
+    var s=evStartDate(ev),e=evEndDate(ev);
+    for(var dcur=new Date(s);dcur<=e;dcur.setDate(dcur.getDate()+1)){
+      if(dcur.getMonth()===ST.calMonth&&dcur.getFullYear()===ST.calYear){
+        var dd=dcur.getDate();
+        if(!evByDay[dd])evByDay[dd]=[];
+        evByDay[dd].push(ev);
+      }
+    }
+  });
   // Also mark birthday days
   if(ST.birthdays){ST.birthdays.forEach(function(bk){if(bk.month-1===ST.calMonth){if(!evByDay[bk.day])evByDay[bk.day]=[];evByDay[bk.day].push({id:"bday-"+bk.id,groupId:bk.groupId,birthday:true});}});}
   var grid=d({css:{padding:"8px 10px 4px"}});
@@ -3484,7 +3562,10 @@ function buildCal(t){
       var gt2=th(ev.groupId||"imm");
       var erow=d({css:{display:"flex",alignItems:"center",gap:"10px",padding:"11px 14px",borderBottom:"1px solid "+t.ap}});
       erow.appendChild(d({css:{width:"8px",height:"8px",borderRadius:"50%",background:gt2.a,flexShrink:0}}));
-      var ei=d({css:{flex:1}});ei.appendChild(d({css:{fontSize:"13px",fontWeight:700,color:"#3D2314"}},ev.title));if(ev.time)ei.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"1px"}},ev.time+(ev.loc?" - "+ev.loc:"")));erow.appendChild(ei);
+      var ei=d({css:{flex:1}});
+      var evInfo=evDayInfo(ev,selDate);
+      ei.appendChild(d({css:{fontSize:"13px",fontWeight:700,color:"#3D2314"}},ev.title+(evInfo.totalDays>1?" (Day "+evInfo.dayIndex+" of "+evInfo.totalDays+")":"")));
+      if(ev.time)ei.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"1px"}},ev.time+(ev.loc?" - "+ev.loc:"")));erow.appendChild(ei);
       var rb2=b({css:{padding:"5px 11px",borderRadius:"50px",border:"1.5px solid "+gt2.a,background:ST.rsvp[ev.id]?gt2.a:"transparent",fontSize:"11px",fontWeight:700,color:ST.rsvp[ev.id]?"white":gt2.a,cursor:"pointer",fontFamily:"inherit",flexShrink:0}},ST.rsvp[ev.id]?"Going!":"RSVP");
       rb2.addEventListener("click",function(){ST.rsvp[ev.id]=!ST.rsvp[ev.id];redraw();});erow.appendChild(rb2);panel.appendChild(erow);
     });
@@ -3508,7 +3589,11 @@ function buildEvCard(ev,gt){
   var row=d({css:{background:gt.ap,border:"1.5px solid "+gt.al,borderRadius:"14px",padding:"11px 13px",marginBottom:"8px",display:"flex",alignItems:"center",gap:"10px"}});
   var dt=d({css:{width:"44px",height:"44px",borderRadius:"11px",background:gt.a,color:"white",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}});
   dt.appendChild(d({css:{fontSize:"7px",fontWeight:700,letterSpacing:"1px",textTransform:"uppercase"}},ev.month));
-  dt.appendChild(d({css:{fontSize:"17px",fontWeight:700,lineHeight:"1"}},String(ev.day)));
+  // A range like "5-8" only makes sense when both ends fall in the same
+  // month the badge is already showing - a trip crossing a month boundary
+  // just shows its start day here, the full range is still on the event.
+  var dayLabel=(ev.endDay&&ev.endMonth===ev.month&&ev.endDay!==ev.day)?ev.day+"-"+ev.endDay:String(ev.day);
+  dt.appendChild(d({css:{fontSize:ev.endDay&&ev.endMonth===ev.month?"14px":"17px",fontWeight:700,lineHeight:"1"}},dayLabel));
   row.appendChild(dt);
   var info=d({css:{flex:1}});info.appendChild(d({css:{fontSize:"13px",fontWeight:700,color:"#3D2314"}},ev.title));
   var sub=(ev.time||"")+(ev.loc?" - "+ev.loc:"");if(sub)info.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"2px"}},sub));
@@ -4029,6 +4114,32 @@ function buildAddEvent(t){
   var ds=el("input",{type:"number",placeholder:"Day",css:{flex:1,padding:"11px 12px",borderRadius:"12px",border:"1.5px solid #F5DDD1",background:"#FAF6F0",fontSize:"13px",color:"#3D2314",outline:"none",fontFamily:"inherit"}});
   ds.value=ST.nEv.day||"";ds.addEventListener("input",function(){ST.nEv.day=this.value;});
   row.appendChild(ms);row.appendChild(ds);sh.appendChild(row);
+  var mdRow=d({css:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"12px"}});
+  var mdCheck=el("input",{type:"checkbox"});
+  mdCheck.checked=!!ST.nEv.multiDay;
+  mdCheck.style.cssText="width:18px;height:18px;accent-color:"+t.a+";cursor:pointer;";
+  mdCheck.addEventListener("click",function(){
+    ST.nEv.multiDay=this.checked;
+    // Pre-fill "Ends" with the start date so the user is editing where it
+    // ends, not typing a whole second date from scratch.
+    if(this.checked&&!ST.nEv.endDay){ST.nEv.endMonth=ST.nEv.month;ST.nEv.endDay=ST.nEv.day;}
+    redraw();
+  });
+  mdRow.appendChild(mdCheck);
+  var mdLabel=d({css:{fontSize:"13px",fontWeight:700,color:"#6B4C35",cursor:"pointer"}},"This is a multi-day event");
+  mdLabel.addEventListener("click",function(){mdCheck.click();});
+  mdRow.appendChild(mdLabel);
+  sh.appendChild(mdRow);
+  if(ST.nEv.multiDay){
+    sh.appendChild(d({css:{fontSize:"11px",fontWeight:800,color:"#9B7B62",textTransform:"uppercase",letterSpacing:".4px",marginBottom:"5px"}},"Ends"));
+    var endRow=d({css:{display:"flex",gap:"8px",marginBottom:"12px"}});
+    var ems=el("select",{css:{flex:1,padding:"11px 12px",borderRadius:"12px",border:"1.5px solid #F5DDD1",background:"#FAF6F0",fontSize:"13px",color:"#3D2314",outline:"none",fontFamily:"inherit"}});
+    EVENT_MONTHS.forEach(function(m){var o=el("option");o.value=m;o.textContent=m;if(m===ST.nEv.endMonth)o.selected=true;ems.appendChild(o);});
+    ems.addEventListener("change",function(){ST.nEv.endMonth=this.value;});
+    var eds=el("input",{type:"number",placeholder:"Day",css:{flex:1,padding:"11px 12px",borderRadius:"12px",border:"1.5px solid #F5DDD1",background:"#FAF6F0",fontSize:"13px",color:"#3D2314",outline:"none",fontFamily:"inherit"}});
+    eds.value=ST.nEv.endDay||"";eds.addEventListener("input",function(){ST.nEv.endDay=this.value;});
+    endRow.appendChild(ems);endRow.appendChild(eds);sh.appendChild(endRow);
+  }
   sh.appendChild(fld("Time","e.g. 10:00 AM","time"));sh.appendChild(fld("Location","e.g. Grandma's house","loc"));
   sh.appendChild(d({css:{fontSize:"11px",fontWeight:800,color:"#9B7B62",textTransform:"uppercase",letterSpacing:".4px",marginBottom:"8px"}},"Family Group"));
   var gp=d({css:{display:"flex",gap:"6px",flexWrap:"wrap",marginBottom:"16px"}});
@@ -4046,12 +4157,15 @@ function buildAddEvent(t){
     var origLabel=sub.textContent;
     sub.textContent="Adding...";sub.disabled=true;sub.style.opacity=".7";
     var ev={month:ST.nEv.month,day:parseInt(ST.nEv.day)||1,year:ST.nEv.year||ST.calYear,title:ST.nEv.title.trim(),group:gObj.label,groupId:gObj.id,going:1,maybe:0,time:ST.nEv.time,loc:ST.nEv.loc,createdBy:currentUser.uid};
+    if(ST.nEv.multiDay&&ST.nEv.endDay){
+      ev.endMonth=ST.nEv.endMonth;ev.endDay=parseInt(ST.nEv.endDay)||ev.day;ev.endYear=ev.year;
+    }
     // Write to Firestore instead of only local state - the "events" listener
     // set up in doSync() picks this up in real time and adds it to ST.evs,
     // so it shows up for everyone (including this device on next load)
     // instead of vanishing on refresh.
     postEvent(ev).then(function(){
-      ST.nEv={title:"",month:"APR",day:"",time:"",loc:"",groupId:"imm"};ST.addEv=false;ST.calSelDay=savedDay;redraw();
+      ST.nEv={title:"",month:"APR",day:"",time:"",loc:"",groupId:"imm",multiDay:false,endMonth:"APR",endDay:""};ST.addEv=false;ST.calSelDay=savedDay;redraw();
     }).catch(function(e){
       console.log("event save failed",e);
       sub.textContent=origLabel;sub.disabled=false;sub.style.opacity="1";
