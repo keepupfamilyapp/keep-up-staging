@@ -118,12 +118,12 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-09-17T22:23:17Z";
+var APP_VERSION="2026-09-17T22:42:04Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
     .then(function(html){
-      var m=html.match(/var APP_VERSION="2026-09-17T22:23:17Z"]+)"/);
+      var m=html.match(/var APP_VERSION="2026-09-17T22:42:04Z"]+)"/);
       if(m&&m[1]&&m[1]!==APP_VERSION)showUpdateBanner();
     }).catch(function(){/* offline, or the request was blocked - just skip this check, try again next interval */});
 }
