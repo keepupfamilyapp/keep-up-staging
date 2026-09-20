@@ -11,6 +11,13 @@
 <link rel="apple-touch-icon" href="icon.svg"/>
 <title>Keep Up</title><!-- v2.2 -->
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=Lora:ital,wght@0,600;1,400&display=swap" rel="stylesheet"/>
+<!-- Leaflet + OpenStreetMap for dropping a pin on an event's location -
+     free, no API key, no account to set up or maintain. Only used for the
+     interactive pin-drop picker; the read-only map preview on the event
+     detail view is a plain OpenStreetMap embed iframe instead, so it needs
+     none of this. -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{height:100%;background:#FAF6F0;font-family:Nunito,sans-serif;overflow:hidden;}
@@ -182,6 +189,13 @@ var messaging=null;
 try{messaging=firebase.messaging();}catch(e){console.log("Messaging not supported:",e);}
 var currentUser=null;
 var unsubscribers=[];
+// The Leaflet map instance backing the location-pin picker (buildLocationPicker,
+// pickPinLocation) - module-level like everything else here that has to
+// survive across redraws: the picker's builder function re-runs on every
+// ST change while it's open, and the map container div gets reused (not
+// recreated) across those redraws via morphNode's id-matching, so the map
+// itself must be created once and reused too, not reinitialized each time.
+var _pinMap=null,_pinMarker=null,_pinOriginalLat=null,_pinOriginalLng=null;
 // Cloudflare Stream - upload via Cloud Function (token stored server-side)
 var CF_ACCOUNT_ID="f6991628f350e3ae320b0ee72805b9f3";
 var CF_CUSTOMER_SUBDOMAIN="customer-32e18pqrf6myogys"; // Stream playback domain - different from account ID
@@ -1006,11 +1020,25 @@ function doSync(){
     if(ST.tab==="feed")redraw();
   });
 
+  // Was collapsing every family member's RSVP for an event into one shared
+  // ST.rsvp[evId] value - whichever doc the snapshot happened to process
+  // last "won", so the RSVP button's Going/not-going state was effectively
+  // random once more than one person RSVP'd, and there was no way to list
+  // who was actually coming. Fixed the same way the reactions listener
+  // right above already does it: keep the full per-person list in
+  // ST.allRsvps for a "who's going" display, and only mirror the CURRENT
+  // user's own doc into ST.rsvp so the toggle buttons reflect their own
+  // status.
   watchGroupScoped("rsvps",myGroupIds,function(snap){
+    ST.allRsvps={};
     snap.forEach(function(doc){
       var r=doc.data();
-      if(r.evId)ST.rsvp[r.evId]=r.going;
+      if(!r.evId)return;
+      if(!ST.allRsvps[r.evId])ST.allRsvps[r.evId]=[];
+      ST.allRsvps[r.evId].push(r);
+      if(currentUser&&r.uid===currentUser.uid)ST.rsvp[r.evId]=r.going;
     });
+    if(ST.tab==="calendar"||ST.eventDetailId)redraw();
   });
 
   // Listen to events
@@ -1073,9 +1101,10 @@ var ST={
   dms:[],
   newDm:false,dmSel:[],dmGrp:"imm",
   addEv:false,calMonth:new Date().getMonth(),calYear:new Date().getFullYear(),calSelDay:null,
-  nEv:{title:"",month:"APR",day:"",time:"",loc:"",groupId:"imm",multiDay:false,endMonth:"APR",endDay:""},
+  nEv:{title:"",month:"APR",day:"",time:"",loc:"",groupId:"imm",multiDay:false,endMonth:"APR",endDay:"",lat:null,lng:null},
+  eventDetailId:null,pickingLocation:false,
   compose:false,upOpen:false,upType:"photo",upStep:1,upCap:"",upCi:"",upImg:null,
-  cmtOpen:null,cmtIn:"",rxPick:null,reactions:{},rsvp:{},
+  cmtOpen:null,cmtIn:"",rxPick:null,reactions:{},rsvp:{},allRsvps:{},
   comments:{},
   birthdays:[],
   groups:[
@@ -1391,6 +1420,17 @@ function evDayInfo(ev,date){
   var totalDays=Math.round((e-s)/86400000)+1;
   var dayIndex=Math.round((date-s)/86400000)+1;
   return {dayIndex:dayIndex,totalDays:totalDays};
+}
+// A readable date line for the event detail view - "June 12, 2026" for a
+// single day, "June 5 - 8, 2026" for a same-month range, or "December 30 -
+// January 2, 2027" when a trip crosses a month (or year) boundary.
+var EVENT_MONTHS_LONG=["January","February","March","April","May","June","July","August","September","October","November","December"];
+function fmtEvDate(ev){
+  var s=evStartDate(ev),e=evEndDate(ev);
+  var sStr=EVENT_MONTHS_LONG[s.getMonth()]+" "+s.getDate();
+  if(e.getTime()===s.getTime())return sStr+", "+s.getFullYear();
+  var eStr=(e.getMonth()===s.getMonth()&&e.getFullYear()===s.getFullYear())?String(e.getDate()):(EVENT_MONTHS_LONG[e.getMonth()]+" "+e.getDate());
+  return sStr+" – "+eStr+", "+e.getFullYear();
 }
 
 // members/comments/reactions/rsvps/events listeners in doSync() all queried
@@ -2198,6 +2238,8 @@ if(ST.editingGroup)wrap.appendChild(buildEditGroup(ST.editingGroup));
   if(ST.compose)wrap.appendChild(buildCompose(t,grp));
   if(ST.upOpen)wrap.appendChild(buildUpload(t,grp));
   if(ST.cmtOpen!==null)wrap.appendChild(buildComments(t));
+  if(ST.eventDetailId)wrap.appendChild(buildEventDetail(t));
+  if(ST.pickingLocation)wrap.appendChild(buildLocationPicker());
   return wrap;
 }
 
@@ -2798,20 +2840,21 @@ function buildCheckinCard(item,t){
 // "Minimal Row" - the option picked after reviewing four mockups
 // (calendar-card-concepts artifact). Compact enough to show in the feed
 // every day of a multi-day event without getting old. Tapping the row
-// jumps to that day in the Calendar tab for full detail (time, location,
-// other events that day); the small circle toggles RSVP right here without
-// leaving the feed - stopPropagation keeps that tap from also triggering
-// the row's own navigation.
+// opens the event detail directly (full info, map, who's going) with no
+// extra tap needed to get there; the small circle still toggles RSVP right
+// here without leaving the feed - stopPropagation keeps that tap from also
+// opening the detail underneath it.
 function buildEventCard(item){
   var card=d({css:{display:"flex",alignItems:"center",gap:"10px",padding:"9px 16px",background:"#FDF8EE",borderBottom:"1px solid #F0E4CF",cursor:"pointer"}});
   card.addEventListener("click",function(){
     var s=evStartDate(item);
-    ST.tab="calendar";ST.memoryDay=null;
+    // Also land the Calendar tab on today's date underneath, so if the
+    // user backs out of the detail sheet they're already on the right day
+    // instead of wherever the calendar last happened to be.
     ST.calMonth=s.getMonth();ST.calYear=s.getFullYear();
-    // Land on *today* within the event's range, not its start day - that's
-    // the day this particular reminder is actually about.
     var now=new Date();
     ST.calSelDay=(now.getMonth()===ST.calMonth&&now.getFullYear()===ST.calYear)?now.getDate():s.getDate();
+    ST.eventDetailId=item.evId;
     redraw();
   });
   card.appendChild(d({css:{width:"8px",height:"8px",borderRadius:"50%",background:"#D4922A",flexShrink:0}}));
@@ -3582,14 +3625,21 @@ function buildCal(t){
     });
     realEvs.forEach(function(ev){
       var gt2=th(ev.groupId||"imm");
-      var erow=d({css:{display:"flex",alignItems:"center",gap:"10px",padding:"11px 14px",borderBottom:"1px solid "+t.ap}});
+      var erow=d({css:{display:"flex",alignItems:"center",gap:"10px",padding:"11px 14px",borderBottom:"1px solid "+t.ap,cursor:"pointer"}});
+      erow.addEventListener("click",function(){ST.eventDetailId=ev.id;redraw();});
       erow.appendChild(d({css:{width:"8px",height:"8px",borderRadius:"50%",background:gt2.a,flexShrink:0}}));
       var ei=d({css:{flex:1}});
       var evInfo=evDayInfo(ev,selDate);
       ei.appendChild(d({css:{fontSize:"13px",fontWeight:700,color:"#3D2314"}},ev.title+(evInfo.totalDays>1?" (Day "+evInfo.dayIndex+" of "+evInfo.totalDays+")":"")));
       if(ev.time)ei.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"1px"}},ev.time+(ev.loc?" - "+ev.loc:"")));erow.appendChild(ei);
       var rb2=b({css:{padding:"5px 11px",borderRadius:"50px",border:"1.5px solid "+gt2.a,background:ST.rsvp[ev.id]?gt2.a:"transparent",fontSize:"11px",fontWeight:700,color:ST.rsvp[ev.id]?"white":gt2.a,cursor:"pointer",fontFamily:"inherit",flexShrink:0}},ST.rsvp[ev.id]?"Going!":"RSVP");
-      rb2.addEventListener("click",function(){ST.rsvp[ev.id]=!ST.rsvp[ev.id];redraw();});erow.appendChild(rb2);panel.appendChild(erow);
+      // This button flipped ST.rsvp locally but never called syncRsvp(), so
+      // an RSVP made from this exact panel was silently never saved - it
+      // would look like it worked, then be gone on next reload and never
+      // show up in anyone else's "who's going" list. Fixed to match every
+      // other RSVP button in the app.
+      rb2.addEventListener("click",function(e){e.stopPropagation();ST.rsvp[ev.id]=!ST.rsvp[ev.id];syncRsvp(ev.id,ST.rsvp[ev.id],ev.groupId);redraw();});
+      erow.appendChild(rb2);panel.appendChild(erow);
     });
     wrap.appendChild(panel);
   }
@@ -3608,7 +3658,8 @@ function buildCal(t){
 }
 
 function buildEvCard(ev,gt){
-  var row=d({css:{background:gt.ap,border:"1.5px solid "+gt.al,borderRadius:"14px",padding:"11px 13px",marginBottom:"8px",display:"flex",alignItems:"center",gap:"10px"}});
+  var row=d({css:{background:gt.ap,border:"1.5px solid "+gt.al,borderRadius:"14px",padding:"11px 13px",marginBottom:"8px",display:"flex",alignItems:"center",gap:"10px",cursor:"pointer"}});
+  row.addEventListener("click",function(){ST.eventDetailId=ev.id;redraw();});
   var dt=d({css:{width:"44px",height:"44px",borderRadius:"11px",background:gt.a,color:"white",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}});
   dt.appendChild(d({css:{fontSize:"7px",fontWeight:700,letterSpacing:"1px",textTransform:"uppercase"}},ev.month));
   // A range like "5-8" only makes sense when both ends fall in the same
@@ -3619,11 +3670,103 @@ function buildEvCard(ev,gt){
   row.appendChild(dt);
   var info=d({css:{flex:1}});info.appendChild(d({css:{fontSize:"13px",fontWeight:700,color:"#3D2314"}},ev.title));
   var sub=(ev.time||"")+(ev.loc?" - "+ev.loc:"");if(sub)info.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"2px"}},sub));
-  info.appendChild(d({css:{fontSize:"11px",color:gt.a,marginTop:"2px"}},ev.going+" going - "+ev.maybe+" maybe"));
+  // ev.going/ev.maybe were fixed counters set once at creation (1/0) and
+  // never updated as people actually RSVP'd - always wrong after the first
+  // response. Now a live count from the same per-person RSVP data the
+  // detail view's "who's going" list reads.
+  var goingCount=(ST.allRsvps[ev.id]||[]).filter(function(r){return r.going;}).length;
+  info.appendChild(d({css:{fontSize:"11px",color:gt.a,marginTop:"2px"}},goingCount+" going"));
   row.appendChild(info);
   var rb=b({css:{padding:"7px 12px",borderRadius:"50px",border:"2px solid "+gt.a,background:ST.rsvp[ev.id]?gt.a:"transparent",fontSize:"11px",fontWeight:700,color:ST.rsvp[ev.id]?"white":gt.a,cursor:"pointer",fontFamily:"inherit",flexShrink:0}},ST.rsvp[ev.id]?"Going!":"RSVP");
-  rb.addEventListener("click",function(){ST.rsvp[ev.id]=!ST.rsvp[ev.id];syncRsvp(ev.id,ST.rsvp[ev.id],ev.groupId);redraw();});
+  rb.addEventListener("click",function(e){e.stopPropagation();ST.rsvp[ev.id]=!ST.rsvp[ev.id];syncRsvp(ev.id,ST.rsvp[ev.id],ev.groupId);redraw();});
   row.appendChild(rb);return row;
+}
+
+// Full event detail - opened by tapping an event anywhere it appears (the
+// feed reminder, the calendar day panel, the "All Events" list). Shows the
+// real date range, a map preview and directions link when a pin was
+// dropped for the location, and who has actually RSVP'd (from
+// ST.allRsvps, the per-person list the fixed rsvps listener now builds) -
+// not the static going/maybe counters the app used to show, which never
+// updated after an event was created.
+function buildEventDetail(t){
+  var ev=ST.evs.find(function(e){return e.id===ST.eventDetailId;});
+  var ov=d({cls:"overlay"});
+  ov.addEventListener("click",function(){ST.eventDetailId=null;redraw();});
+  var sh=d({cls:"sheet"});
+  sh.addEventListener("click",function(e){e.stopPropagation();});
+  if(!ev){
+    // Deleted, or this device hasn't synced it yet - close gracefully
+    // instead of showing a blank sheet with nothing in it.
+    sh.appendChild(d({cls:"handle"}));
+    sh.appendChild(d({css:{padding:"20px 4px",textAlign:"center",fontSize:"13px",color:"#9B7B62"}},"This event isn't available anymore."));
+    var closeBtn=b({css:{width:"100%",padding:"12px",borderRadius:"50px",background:"#F5DDD1",border:"none",color:"#6B4226",fontSize:"14px",fontWeight:700,cursor:"pointer",fontFamily:"inherit"}},"Close");
+    closeBtn.addEventListener("click",function(){ST.eventDetailId=null;redraw();});
+    sh.appendChild(closeBtn);
+    ov.appendChild(sh);return ov;
+  }
+  var gt=th(ev.groupId||"imm");
+  sh.appendChild(d({cls:"handle"}));
+
+  var hdrRow=d({css:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"6px"}});
+  hdrRow.appendChild(d({css:{fontFamily:"Lora,serif",fontSize:"19px",fontWeight:600,color:"#3D2314",flex:1,marginRight:"10px"}},ev.title));
+  var closeX=b({css:{background:"#F5DDD1",border:"none",borderRadius:"50%",width:"28px",height:"28px",fontSize:"14px",fontWeight:700,color:"#6B4226",cursor:"pointer",fontFamily:"inherit",flexShrink:0}},"✕");
+  closeX.addEventListener("click",function(){ST.eventDetailId=null;redraw();});
+  hdrRow.appendChild(closeX);
+  sh.appendChild(hdrRow);
+
+  sh.appendChild(d({css:{fontSize:"13px",color:gt.a,fontWeight:700,marginBottom:"2px"}},fmtEvDate(ev)+(ev.time?" · "+ev.time:"")));
+  var today0=new Date();today0=new Date(today0.getFullYear(),today0.getMonth(),today0.getDate());
+  if(evContainsDate(ev,today0)){
+    var todayInfo=evDayInfo(ev,today0);
+    if(todayInfo.totalDays>1)sh.appendChild(d({css:{fontSize:"12px",color:"#9B7B62",marginTop:"2px"}},"Today is day "+todayInfo.dayIndex+" of "+todayInfo.totalDays));
+  }
+  if(ev.loc)sh.appendChild(d({css:{fontSize:"13px",color:"#6B4C35",marginTop:"8px"}},"📍 "+ev.loc));
+
+  // Map preview - a plain OpenStreetMap embed iframe rather than a live
+  // Leaflet map, since this is read-only: no API key, no map library to
+  // keep alive across redraws, just a picture with a pin on it.
+  if(ev.lat&&ev.lng){
+    var mapWrap=d({css:{borderRadius:"14px",overflow:"hidden",border:"1.5px solid "+t.ap,marginTop:"12px",height:"140px"}});
+    var mapFrame=document.createElement("iframe");
+    var span=0.006;
+    mapFrame.src="https://www.openstreetmap.org/export/embed.html?bbox="+(ev.lng-span)+"%2C"+(ev.lat-span)+"%2C"+(ev.lng+span)+"%2C"+(ev.lat+span)+"&layer=mapnik&marker="+ev.lat+"%2C"+ev.lng;
+    mapFrame.style.cssText="width:100%;height:100%;border:0;";
+    mapFrame.loading="lazy";
+    mapFrame.title="Event location";
+    mapWrap.appendChild(mapFrame);
+    sh.appendChild(mapWrap);
+  }
+  if((ev.lat&&ev.lng)||ev.loc){
+    var dirHref=(ev.lat&&ev.lng)?("https://www.google.com/maps/dir/?api=1&destination="+ev.lat+","+ev.lng):("https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(ev.loc));
+    var dirLink=el("a",{css:{display:"inline-flex",alignItems:"center",gap:"6px",fontSize:"12.5px",fontWeight:700,color:gt.a,textDecoration:"none",marginTop:"10px",marginBottom:"6px"}});
+    dirLink.href=dirHref;dirLink.target="_blank";dirLink.rel="noopener";
+    dirLink.textContent="🧭 Get Directions";
+    sh.appendChild(dirLink);
+  }
+
+  var going=!!ST.rsvp[ev.id];
+  var rsvpBtn=b({css:{width:"100%",padding:"12px",borderRadius:"50px",background:going?gt.a:"transparent",border:"2px solid "+gt.a,color:going?"white":gt.a,fontSize:"14px",fontWeight:800,cursor:"pointer",fontFamily:"inherit",marginTop:"18px",marginBottom:"18px"}},going?"✓ You're Going":"I'll Be There");
+  rsvpBtn.addEventListener("click",function(){ST.rsvp[ev.id]=!ST.rsvp[ev.id];syncRsvp(ev.id,ST.rsvp[ev.id],ev.groupId);redraw();});
+  sh.appendChild(rsvpBtn);
+
+  var goingList=(ST.allRsvps[ev.id]||[]).filter(function(r){return r.going;});
+  sh.appendChild(d({css:{fontSize:"11px",fontWeight:800,color:"#9B7B62",textTransform:"uppercase",letterSpacing:".4px",marginBottom:"8px"}},goingList.length?goingList.length+" Going":"Who's Going"));
+  if(!goingList.length){
+    sh.appendChild(d({css:{fontSize:"13px",color:"#9B7B62"}},"No one's RSVP'd yet — be the first!"));
+  } else {
+    goingList.forEach(function(r){
+      var prow=d({css:{display:"flex",alignItems:"center",gap:"10px",padding:"7px 0"}});
+      var pav=d({css:{width:"30px",height:"30px",borderRadius:"50%",background:gt.ap,border:"1.5px solid "+gt.al,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"15px",flexShrink:0,overflow:"hidden"}});
+      renderAvatarGlyph(pav,r.av,8,"👤");
+      prow.appendChild(pav);
+      prow.appendChild(d({css:{fontSize:"13px",fontWeight:700,color:"#3D2314"}},r.name||"Someone"));
+      sh.appendChild(prow);
+    });
+  }
+
+  ov.appendChild(sh);
+  return ov;
 }
 
 function buildProfileBanner(t){
@@ -4169,6 +4312,23 @@ function buildAddEvent(t){
     endRow.appendChild(ems);endRow.appendChild(eds);sh.appendChild(endRow);
   }
   sh.appendChild(fld("Time","e.g. 10:00 AM","time"));sh.appendChild(fld("Location","e.g. Grandma's house","loc"));
+  // Dropping a pin is optional and separate from the text location above -
+  // an event can have either, both, or neither. The text field alone is
+  // often enough ("Grandma's house"); the pin is there for when a map
+  // actually helps (a park, a trailhead, somewhere with no clean address).
+  var pinRow=d({css:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"10px",padding:"10px 12px",borderRadius:"12px",background:"#FAF6F0",border:"1.5px solid #F5DDD1",marginBottom:"12px",cursor:"pointer"}});
+  var pinLabel=d({css:{fontSize:"13px",fontWeight:700,color:ST.nEv.lat?t.a:"#6B4C35"}},ST.nEv.lat?"📍 Pin dropped — tap to change":"📍 Drop a pin (optional)");
+  pinRow.appendChild(pinLabel);
+  if(ST.nEv.lat){
+    var clearPin=d({css:{fontSize:"12px",color:"#9B7B62",fontWeight:700,textDecoration:"underline"}},"Remove");
+    clearPin.addEventListener("click",function(e){e.stopPropagation();ST.nEv.lat=null;ST.nEv.lng=null;redraw();});
+    pinRow.appendChild(clearPin);
+  }
+  pinRow.addEventListener("click",function(){
+    _pinOriginalLat=ST.nEv.lat;_pinOriginalLng=ST.nEv.lng;
+    ST.pickingLocation=true;redraw();
+  });
+  sh.appendChild(pinRow);
   sh.appendChild(d({css:{fontSize:"11px",fontWeight:800,color:"#9B7B62",textTransform:"uppercase",letterSpacing:".4px",marginBottom:"8px"}},"Family Group"));
   var gp=d({css:{display:"flex",gap:"6px",flexWrap:"wrap",marginBottom:"16px"}});
   ST.groups.forEach(function(g){
@@ -4188,18 +4348,92 @@ function buildAddEvent(t){
     if(ST.nEv.multiDay&&ST.nEv.endDay){
       ev.endMonth=ST.nEv.endMonth;ev.endDay=parseInt(ST.nEv.endDay)||ev.day;ev.endYear=ev.year;
     }
+    if(ST.nEv.lat&&ST.nEv.lng){ev.lat=ST.nEv.lat;ev.lng=ST.nEv.lng;}
     // Write to Firestore instead of only local state - the "events" listener
     // set up in doSync() picks this up in real time and adds it to ST.evs,
     // so it shows up for everyone (including this device on next load)
     // instead of vanishing on refresh.
     postEvent(ev).then(function(){
-      ST.nEv={title:"",month:"APR",day:"",time:"",loc:"",groupId:"imm",multiDay:false,endMonth:"APR",endDay:""};ST.addEv=false;ST.calSelDay=savedDay;redraw();
+      ST.nEv={title:"",month:"APR",day:"",time:"",loc:"",groupId:"imm",multiDay:false,endMonth:"APR",endDay:"",lat:null,lng:null};ST.addEv=false;ST.calSelDay=savedDay;redraw();
     }).catch(function(e){
       console.log("event save failed",e);
       sub.textContent=origLabel;sub.disabled=false;sub.style.opacity="1";
       showTopToast("Couldn't save that event — check your connection and try again.");
     });
   });sh.appendChild(sub);ov.appendChild(sh);return ov;
+}
+
+// The interactive pin-drop map, opened from the "Drop a pin" row in
+// buildAddEvent. Unlike the read-only preview on the event detail view,
+// this needs a real live Leaflet map since the user taps it to place a
+// marker - so it has to deal with the DOM-morphing lifecycle problem
+// documented on _pinMap above: this function re-runs on every redraw
+// while the sheet is open (the "Use This Spot" button's disabled state
+// alone triggers one), but L.map() may only ever be called once against a
+// given container. The requestAnimationFrame block below only creates the
+// map the first time (guarded by `_pinMap` already being set), and
+// closePinPicker() is the only place that tears it down.
+function buildLocationPicker(){
+  var ov=d({css:{position:"fixed",inset:0,background:"rgba(61,35,20,.5)",zIndex:85,display:"flex",alignItems:"flex-end"}});
+  var sh=d({css:{width:"100%",background:"#FFF9F2",borderRadius:"24px 24px 0 0",height:"78vh",display:"flex",flexDirection:"column",overflow:"hidden",animation:"slideUp .25s ease"}});
+  sh.addEventListener("click",function(e){e.stopPropagation();});
+  var hdr=d({css:{padding:"13px 15px",borderBottom:"1px solid #F5DDD1",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,gap:"8px"}});
+  var cancelBtn=b({css:{background:"#F5DDD1",border:"none",borderRadius:"50px",padding:"6px 14px",fontSize:"13px",fontWeight:700,color:"#6B4226",cursor:"pointer",fontFamily:"inherit",flexShrink:0}},"Cancel");
+  cancelBtn.addEventListener("click",function(){closePinPicker(false);});
+  hdr.appendChild(cancelBtn);
+  hdr.appendChild(d({css:{fontSize:"15px",fontWeight:700,color:"#C4714A",flex:1,textAlign:"center"}},"Drop a Pin"));
+  var useBtn=b({id:"pin-use-btn",css:{background:ST.nEv.lat?"#C4714A":"#E8DDD3",border:"none",borderRadius:"50px",padding:"6px 14px",fontSize:"13px",fontWeight:700,color:"white",cursor:"pointer",fontFamily:"inherit",flexShrink:0}},"Use This Spot");
+  useBtn.disabled=!ST.nEv.lat;
+  useBtn.addEventListener("click",function(){closePinPicker(true);});
+  hdr.appendChild(useBtn);
+  sh.appendChild(hdr);
+  sh.appendChild(d({css:{padding:"8px 15px",fontSize:"12px",color:"#9B7B62",textAlign:"center",flexShrink:0}},"Tap anywhere on the map to drop a pin"));
+  var mapDiv=d({id:"pin-map",css:{flex:1}});
+  sh.appendChild(mapDiv);
+  ov.appendChild(sh);
+
+  requestAnimationFrame(function(){
+    var container=document.getElementById("pin-map");
+    if(!container||_pinMap)return; // already live from an earlier redraw, or DOM not painted yet
+    var startLat=ST.nEv.lat||39.5,startLng=ST.nEv.lng||-98.35; // continental-US fallback view
+    _pinMap=L.map(container).setView([startLat,startLng],ST.nEv.lat?15:4);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{
+      attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+      maxZoom:19
+    }).addTo(_pinMap);
+    if(ST.nEv.lat&&ST.nEv.lng)_pinMarker=L.marker([ST.nEv.lat,ST.nEv.lng]).addTo(_pinMap);
+    _pinMap.on("click",function(e){
+      if(_pinMarker)_pinMap.removeLayer(_pinMarker);
+      _pinMarker=L.marker(e.latlng).addTo(_pinMap);
+      ST.nEv.lat=e.latlng.lat;ST.nEv.lng=e.latlng.lng;
+      var ub=document.getElementById("pin-use-btn");
+      if(ub){ub.disabled=false;ub.style.background="#C4714A";}
+    });
+    // No pin yet - try centering on the user's actual location instead of
+    // the middle of the country. Silently ignored if denied/unavailable;
+    // the fallback view above still works fine either way.
+    if(!ST.nEv.lat&&navigator.geolocation){
+      navigator.geolocation.getCurrentPosition(function(pos){
+        if(_pinMap)_pinMap.setView([pos.coords.latitude,pos.coords.longitude],14);
+      },function(){},{timeout:5000});
+    }
+    // The sheet's slide-up animation finishes after Leaflet already
+    // measured its container at 0 height (still off-screen at that
+    // point) - without this the map tiles render into a sliver until the
+    // user manually interacts with it.
+    setTimeout(function(){if(_pinMap)_pinMap.invalidateSize();},300);
+  });
+  return ov;
+}
+
+function closePinPicker(keep){
+  if(!keep){
+    ST.nEv.lat=_pinOriginalLat;
+    ST.nEv.lng=_pinOriginalLng;
+  }
+  if(_pinMap){_pinMap.remove();_pinMap=null;_pinMarker=null;}
+  ST.pickingLocation=false;
+  redraw();
 }
 
 function buildCompose(t,grp){
@@ -4804,7 +5038,7 @@ function fallbackCopy(text,btn,origColor){
 function syncRsvp(evId,going,groupId){
   var uid=localStorage.getItem("ku_uid")||"anon";
   db.collection("rsvps").doc(evId+"_"+uid).set({
-    evId:String(evId),uid:uid,name:ST.name,going:going,groupId:groupId||"imm",
+    evId:String(evId),uid:uid,name:ST.name,av:ST.avatar,going:going,groupId:groupId||"imm",
     updatedAt:firebase.firestore.FieldValue.serverTimestamp()
   }).catch(function(e){console.log("rsvp sync failed",e);});
 }
