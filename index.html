@@ -73,7 +73,7 @@ var _errLogCount=0;
 function logErrorRemote(info){
   try{
     if(typeof db==="undefined"||!db)return; // Firebase not ready yet
-    if(_errLogCount>=15)return; // avoid flooding if something loops
+    if(_errLogCount>=30)return; // avoid flooding if something loops (raised from 15 now that operation-level failures route through here too)
     _errLogCount++;
     var uidForLog="unknown";
     try{uidForLog=(typeof currentUser!=="undefined"&&currentUser&&currentUser.uid)||localStorage.getItem("ku_uid")||"unknown";}catch(e){}
@@ -92,6 +92,24 @@ function logErrorRemote(info){
       createdAt:firebase.firestore.FieldValue.serverTimestamp()
     }).catch(function(){}); // never let a logging failure cause more errors
   }catch(e){/* swallow - error logging must never itself crash the app */}
+}
+// Thin wrapper around logErrorRemote for operation-level failures (a
+// specific Firestore read/write that failed) rather than uncaught JS
+// exceptions. Call sites pass a short label identifying which operation
+// failed, so a failure is diagnosable from the admin "Recent Errors" screen
+// without having to reproduce it live. Most of this file's .catch() blocks
+// used to just swallow the error completely - that is exactly how bugs like
+// groups silently missing their label went unnoticed for who knows how long.
+function logAppError(context,err){
+  try{
+    // A real connectivity blip throws a wall of these at once and isn't an
+    // actionable bug - skip remote logging for those (the call site may
+    // still show its own toast) so the per-session log budget below isn't
+    // burned on routine offline hiccups instead of real failures.
+    if(typeof navigator!=="undefined"&&navigator.onLine===false)return;
+    var msg=err&&(err.message||String(err));
+    logErrorRemote({message:"["+context+"] "+(msg||"unknown error"),stack:err&&err.stack,source:context});
+  }catch(e){/* logging must never itself throw */}
 }
 window.onerror=function(msg,src,line,col,err){
   var d=document.getElementById("debug");
@@ -125,12 +143,12 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-09-28T20:47:51Z";
+var APP_VERSION="2026-09-28T22:31:02Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
     .then(function(html){
-      var m=html.match(/var APP_VERSION="2026-09-28T20:47:51Z"]+)"/);
+      var m=html.match(/var APP_VERSION="2026-09-28T22:31:02Z"]+)"/);
       if(m&&m[1]&&m[1]!==APP_VERSION)showUpdateBanner();
     }).catch(function(){/* offline, or the request was blocked - just skip this check, try again next interval */});
 }
@@ -262,7 +280,7 @@ function initNotifications(){
             token:token,uid:uid,name:ST.name,
             groupIds:groupIds,
             updatedAt:firebase.firestore.FieldValue.serverTimestamp()
-          },{merge:true}).then(function(){console.log("Token saved to Firestore!");}).catch(function(e){console.log("token save failed",e);});
+          },{merge:true}).then(function(){console.log("Token saved to Firestore!");}).catch(function(e){logAppError("token save failed",e);console.log("token save failed",e);});
         } else {
           console.log("No uid found - retrying in 3s");
           setTimeout(initNotifications,3000);
@@ -271,7 +289,7 @@ function initNotifications(){
         console.log("No token returned from FCM");
       }
     })
-    .catch(function(e){console.log("Notification setup failed:",e.code,e.message);});
+    .catch(function(e){logAppError("Notification setup failed:",e);console.log("Notification setup failed:",e.code,e.message);});
 
   // Handle foreground messages - guarded so this only ever attaches once,
   // since initNotifications() can legitimately be called multiple times
@@ -318,14 +336,14 @@ function uploadPhoto(dataUrl){
         storage.ref("videos/"+uid+"/"+Date.now()+"."+ext).put(ST.upVideoFile)
           .then(function(snap){return snap.ref.getDownloadURL();})
           .then(function(url){resolve(url);})
-          .catch(function(e2){resolve(null);});
+          .catch(function(e2){logAppError("video upload failed (Cloudflare and Firebase both failed)",e2);resolve(null);});
       });
     } else {
       var ref=storage.ref("photos/"+uid+"/"+Date.now()+".jpg");
       ref.putString(dataUrl,"data_url",{contentType:"image/jpeg"})
         .then(function(snap){return snap.ref.getDownloadURL();})
         .then(function(url){resolve(url);})
-        .catch(function(e){console.log("Storage upload failed",e);resolve(dataUrl);});
+        .catch(function(e){logAppError("Storage upload failed",e);console.log("Storage upload failed",e);resolve(dataUrl);});
     }
   });
 }
@@ -359,6 +377,7 @@ function fetchAllFeeds(){
         if(ST.tab==="feed")redraw();
       },400);
     }).catch(function(e){
+      logAppError("fetchAllFeeds error",e);
       console.log("fetchAllFeeds error:",e.code,e.message);
       ST.feedLoading=false;
       ST.appReady=true;
@@ -446,7 +465,7 @@ function showSendToChatPicker(feedItem){
         redraw();
         postToChat(grpId,Object.assign({},msg,{you:false})).then(function(){
           ST.chatMsgs[grpId]=ST.chatMsgs[grpId].filter(function(x){return x.id!==tmpId2;});
-        }).catch(function(){});
+        }).catch(function(e){logAppError("postToChat (share post to group chat)",e);});
       });
     })(g.id,g.label);
     list.appendChild(row);
@@ -476,7 +495,7 @@ function showSendToChatPicker(feedItem){
         postToDm(dmObj.id,Object.assign({},msg,{you:false})).then(function(){
           // Remove temp after Firestore confirms
           dmObj.msgs=dmObj.msgs.filter(function(x){return x.id!==tmpId;});
-        }).catch(function(){});
+        }).catch(function(e){logAppError("postToDm (share post to DM)",e);});
       });
     })(dm);
     list.appendChild(row);
@@ -514,7 +533,7 @@ function checkContextualChatReminders(){
         you:false,system:true,
         groupId:gid
       };
-      postToChat(gid,msg).catch(function(){});
+      postToChat(gid,msg).catch(function(e){logAppError("postToChat (birthday reminder auto-post)",e);});
     }
   });
 
@@ -537,7 +556,7 @@ function checkContextualChatReminders(){
         you:false,system:true,
         groupId:gid
       };
-      postToChat(gid,msg).catch(function(){});
+      postToChat(gid,msg).catch(function(e){logAppError("postToChat (event reminder auto-post)",e);});
     }
   });
 }
@@ -604,7 +623,7 @@ function syncOn(){
     ST.muteComments=!!d.muteComments;
     ST.muteDailyReminder=!!d.muteDailyReminder;
     if(ST.tab==="profile")redraw();
-  }).catch(function(){});
+  }).catch(function(e){logAppError("fcmTokens.get (load mute prefs)",e);});
   doSync();
 }
 function doSync(){
@@ -628,7 +647,7 @@ function doSync(){
         });
         ST.feed[gid].sort(function(a,b){return tsMillis(b.createdAt)-tsMillis(a.createdAt);});
         if(ST.tab==="feed")redraw();
-      }).catch(function(e){console.log("fetchFeed error:",e);});
+      }).catch(function(e){logAppError("fetchFeed error:",e);console.log("fetchFeed error:",e);});
   }
   ST.groups.forEach(function(g){fetchFeed(g.id);});
 
@@ -725,7 +744,7 @@ function doSync(){
       .then(function(snap){
         snap.forEach(function(doc){ST.birthdays.push(doc.data());});
         if(ST.tab==="calendar")redraw();
-      }).catch(function(){});
+      }).catch(function(e){logAppError("groups/birthdays.get (load group birthdays)",e);});
   });
   // Also load member birthdays automatically
   ST.groups.forEach(function(g){
@@ -741,7 +760,7 @@ function doSync(){
             }
           }
         });
-      }).catch(function(){});
+      }).catch(function(e){logAppError("members.where(groupId).get (auto member birthdays)",e);});
   });
   // Load saved group labels/icons/photo from Firestore
   ST.groups.forEach(function(g){
@@ -753,7 +772,7 @@ function doSync(){
         g.photo=data.photo||null;
         if(ST.tab==="feed"||ST.tab==="profile")redraw();
       }
-    }).catch(function(){});
+    }).catch(function(e){logAppError("groups.get (refresh label/icon/photo)",e);});
   });
 
   // Listen to DM messages
@@ -832,7 +851,7 @@ function doSync(){
                 localStorage.setItem("ku_unread_"+dmId,String(dm.unread));
                 if(myUid4)db.collection("userDms").doc(dmId).update({
                   ["unreadBy."+myUid4]:dm.unread
-                }).catch(function(){});
+                }).catch(function(e){logAppError("userDms.update (increment DM unread)",e);});
               }
             }
           }
@@ -904,7 +923,7 @@ function doSync(){
       if(openDm&&openDm.unread>0){
         openDm.unread=0;
         var myUid6=currentUser?currentUser.uid:localStorage.getItem("ku_uid");
-        if(myUid6)db.collection("userDms").doc(ST.openChat).update({["unreadBy."+myUid6]:0}).catch(function(){});
+        if(myUid6)db.collection("userDms").doc(ST.openChat).update({["unreadBy."+myUid6]:0}).catch(function(e){logAppError("userDms.update (clear DM unread on chat tab visit)",e);});
       }
     }
           redraw();
@@ -984,7 +1003,7 @@ function doSync(){
             });
           });
           if(ST.tab==="profile")redraw();
-        }).catch(function(){});
+        }).catch(function(e){logAppError("profiles.where(in) (merge profile data into members)",e);});
     }
     for(var bi=0;bi<allUids.length;bi+=10){fetchProfileBatch(allUids.slice(bi,bi+10));}
   });
@@ -1056,7 +1075,21 @@ function doSync(){
 
 function postToFeed(item){
   if(!currentUser)return Promise.reject(new Error("Not authenticated"));
+  // Firestore rejects the ENTIRE write if any field is JS undefined (not
+  // null, undefined) - "Unsupported field value: undefined". groupId ending
+  // up undefined here (ST.group desyncing, a stale reference, etc.) used to
+  // mean the write failed outright with a raw SDK error shown to the user.
+  // Backfill from whatever group we can find before ever reaching Firestore,
+  // and refuse the write instead of letting it fail unexplained if nothing
+  // usable exists at all.
+  var safeGroupId=item.groupId||ST.group||(ST.groups[0]&&ST.groups[0].id);
+  if(!safeGroupId){
+    var err=new Error("No valid group to post to");
+    logAppError("postToFeed (no groupId available)",err);
+    return Promise.reject(err);
+  }
   return db.collection("feed").add(Object.assign({},item,{
+    groupId:safeGroupId,
     senderUid:currentUser.uid,
     createdAt:firebase.firestore.FieldValue.serverTimestamp()
   }));
@@ -1720,6 +1753,7 @@ function buildOnboarding(){
           ST.obStep=0.7;redraw();
         })
         .catch(function(e){
+          logAppError("phone sign-in failed",e);
           sendBtn.textContent="Send Code";sendBtn.style.background="#C4714A";
           showPhoneErr(friendlyAuthError(e));
           if(window.recaptchaVerifier){window.recaptchaVerifier.clear();window.recaptchaVerifier=null;}
@@ -1831,12 +1865,14 @@ function buildOnboarding(){
               // Genuinely new account for this phone number - continue onboarding
               ST.obStep=1;redraw();
             }
-          }).catch(function(){
+          }).catch(function(e){
+            logAppError("existing-account phone check failed (fell back to new onboarding)",e);
             // Couldn't check - fall back to normal onboarding rather than blocking them
             ST.obStep=1;redraw();
           });
         })
         .catch(function(e){
+          logAppError("verification code check failed",e);
           verifyBtn.textContent="Verify";verifyBtn.style.background="#C4714A";
           var code2=e&&e.code||"";
           if(code2==="auth/code-expired")showCodeErr("This code expired. Tap \u201CResend code\u201D below to get a new one.");
@@ -1958,7 +1994,7 @@ function buildOnboarding(){
       if(!currentUser){alert("Please wait a moment while we sign you in.");return;}
       // Mark invite token as used now that onboarding is completing
       if(ST.pendingInviteToken){
-        db.collection("inviteTokens").doc(ST.pendingInviteToken).update({used:true,usedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(){});
+        db.collection("inviteTokens").doc(ST.pendingInviteToken).update({used:true,usedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(e){logAppError("inviteTokens.update (mark used - existing account invite)",e);});
         ST.pendingInviteToken=null;
       }
       var uid=currentUser.uid;
@@ -2006,8 +2042,8 @@ function buildOnboarding(){
         createGroupDocFirst.then(function(){
           return storage.ref("groupPhotos/"+finalGrpId+".jpg").putString(ST.obGrpPhoto,"data_url");
         }).then(function(snap){return snap.ref.getDownloadURL();})
-          .then(function(url){db.collection("groups").doc(finalGrpId).set({photo:url},{merge:true}).catch(function(){});})
-          .catch(function(e){console.log("onboarding group photo upload failed",e);});
+          .then(function(url){db.collection("groups").doc(finalGrpId).set({photo:url},{merge:true}).catch(function(e){logAppError("groups.set (onboarding group photo upload)",e);});})
+          .catch(function(e){logAppError("onboarding group photo upload failed",e);console.log("onboarding group photo upload failed",e);});
       }
       createGroupDocFirst.then(function(){
         return Promise.all([
@@ -2035,6 +2071,7 @@ function buildOnboarding(){
         }
         redraw();
       }).catch(function(e){
+        logAppError("onboarding save failed (userGroups/profiles/members)",e);
         console.log("onboarding save failed",e);
         completeBtn.textContent="Take me to Keep Up";completeBtn.style.background="#C4714A";
         var setupErrBox=document.getElementById("ob-setup-err");
@@ -2978,7 +3015,7 @@ function buildChat(t){
       if(myUid)db.collection("userDms").doc(dm.id).update({
         ["seenBy."+myUid]:firebase.firestore.FieldValue.serverTimestamp(),
         ["unreadBy."+myUid]:0
-      }).catch(function(){});
+      }).catch(function(e){logAppError("userDms.update (mark DM read - list tap)",e);});
       history.pushState(null,"",location.href);redraw();
     });wrap.appendChild(row);
   });
@@ -3003,7 +3040,7 @@ function buildChatView(t,grp){
       db.collection("userDms").doc(cid).update({
         ["seenBy."+myUid]:firebase.firestore.FieldValue.serverTimestamp(),
         ["unreadBy."+myUid]:0
-      }).catch(function(){});
+      }).catch(function(e){logAppError("userDms.update (mark DM read - chat opened)",e);});
     },1000);}
   }
   var hdr=d({css:{background:t.cb,padding:"10px 13px",display:"flex",alignItems:"center",gap:"10px",borderBottom:"1px solid "+t.ap,flexShrink:0}});
@@ -3068,9 +3105,9 @@ function buildChatView(t,grp){
           var docId=msgId+"_"+myUid;
           var existing=(ST.chatReactions[msgId]||[]).find(function(r){return r.uid===myUid;});
           if(existing&&existing.em===em){
-            db.collection("chatReactions").doc(docId).delete().catch(function(){});
+            db.collection("chatReactions").doc(docId).delete().catch(function(e){logAppError("chatReactions.delete (toggle reaction off)",e);});
           } else {
-            db.collection("chatReactions").doc(docId).set({msgId:msgId,chatId:cid,uid:myUid,em:em,name:ST.name||"You"}).catch(function(){});
+            db.collection("chatReactions").doc(docId).set({msgId:msgId,chatId:cid,uid:myUid,em:em,name:ST.name||"You"}).catch(function(e){logAppError("chatReactions.set (toggle reaction on)",e);});
           }
         }
         setTimeout(function(){var _cl=document.getElementById("chat-msg-list");if(_cl)_cl.scrollTop=_cl.scrollHeight;},30);
@@ -3113,9 +3150,9 @@ function buildChatView(t,grp){
       redraw();
       // Delete from Firestore
       if(isDm){
-        db.collection("dms").doc(chatId).collection("msgs").doc(msgId).delete().catch(function(e){console.log("delete failed",e);});
+        db.collection("dms").doc(chatId).collection("msgs").doc(msgId).delete().catch(function(e){logAppError("delete failed",e);console.log("delete failed",e);});
       } else {
-        db.collection("chat").doc(msgId).delete().catch(function(e){console.log("delete failed",e);});
+        db.collection("chat").doc(msgId).delete().catch(function(e){logAppError("delete failed",e);console.log("delete failed",e);});
       }
     });
     row.appendChild(cBtn);row.appendChild(dBtn);sh.appendChild(row);
@@ -3281,9 +3318,9 @@ function buildChatView(t,grp){
           var docId=mid+"_"+myUid;
           var already=(ST.chatReactions[mid]||[]).some(function(r){return r.uid===myUid&&r.em===emoji;});
           if(already){
-            db.collection("chatReactions").doc(docId).delete().catch(function(){});
+            db.collection("chatReactions").doc(docId).delete().catch(function(e){logAppError("chatReactions.delete (toggle reaction off v2)",e);});
           } else {
-            db.collection("chatReactions").doc(docId).set({msgId:mid,chatId:cid,uid:myUid,em:emoji,name:ST.name||"You"}).catch(function(){});
+            db.collection("chatReactions").doc(docId).set({msgId:mid,chatId:cid,uid:myUid,em:emoji,name:ST.name||"You"}).catch(function(e){logAppError("chatReactions.set (toggle reaction on v2)",e);});
           }
         });})(em,msgId);
         rxRow.appendChild(pill);
@@ -3405,6 +3442,7 @@ function sendChatPhoto(gid,file,t){
       var chatList=document.getElementById("chat-msg-list");
       if(chatList)chatList.scrollTop=chatList.scrollHeight;
     }).catch(function(e){
+      logAppError("chat photo upload failed",e);
       console.log("chat photo upload failed",e);
       if(dm){dm.msgs=dm.msgs.filter(function(x){return x.id!==tempId;});}
       else{ST.chatMsgs[gid]=ST.chatMsgs[gid].filter(function(x){return x.id!==tempId;});}
@@ -3440,7 +3478,7 @@ function sendChatVideo(gid,file,t){
       else{ST.chatMsgs[gid]=ST.chatMsgs[gid].filter(function(x){return x.id!==tempId;});}
       if(dm){
         postToDm(gid,Object.assign({},msg,{you:false})).then(function(){
-          db.collection("userDms").doc(gid).update({last:"\uD83C\uDFA5 Video",lt:"Just now",updatedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(){});
+          db.collection("userDms").doc(gid).update({last:"\uD83C\uDFA5 Video",lt:"Just now",updatedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(e){logAppError("userDms.update (video message DM preview)",e);});
         }).catch(function(){
           dm.msgs.push(Object.assign({},msg,{id:Date.now()}));dm.last="\uD83C\uDFA5 Video";dm.lt="Just now";
         });
@@ -3453,6 +3491,7 @@ function sendChatVideo(gid,file,t){
       var chatList2=document.getElementById("chat-msg-list");
       if(chatList2)chatList2.scrollTop=chatList2.scrollHeight;
     }).catch(function(e){
+      logAppError("chat video upload failed",e);
       console.log("chat video upload failed",e);
       if(dm){dm.msgs=dm.msgs.filter(function(x){return x.id!==tempId;});}
       else{ST.chatMsgs[gid]=ST.chatMsgs[gid].filter(function(x){return x.id!==tempId;});}
@@ -3484,10 +3523,10 @@ function sendChat(gid){
       db.collection("userDms").doc(gid).update({
         last:msg.text,lt:Date.now(),
         updatedAt:firebase.firestore.FieldValue.serverTimestamp()
-      }).catch(function(){});
-    }).catch(function(e){console.log("DM send failed",e);});
+      }).catch(function(e){logAppError("userDms.update (DM last-message preview)",e);});
+    }).catch(function(e){logAppError("DM send failed",e);console.log("DM send failed",e);});
   } else {
-    postToChat(gid,Object.assign({},msg,{you:false})).catch(function(e){console.log("chat send failed",e);});
+    postToChat(gid,Object.assign({},msg,{you:false})).catch(function(e){logAppError("chat send failed",e);console.log("chat send failed",e);});
   }
 }
 
@@ -3534,6 +3573,7 @@ function buildMemoryDay(t){
         redraw();
       })
       .catch(function(e){
+        logAppError("memory day fetch failed",e);
         console.log("memory fetch failed",e);
         ST.memoryPosts=[];
         redraw();
@@ -3820,10 +3860,10 @@ function buildProfileBanner(t){
           .then(function(url){
             ST.avatar=url;
             localStorage.setItem("ku_av",url);
-            db.collection("profiles").doc(currentUser.uid).set({av:url},{merge:true}).catch(function(){});
+            db.collection("profiles").doc(currentUser.uid).set({av:url},{merge:true}).catch(function(e){logAppError("profiles.set (avatar upload - profile banner)",e);});
             redraw();
           })
-          .catch(function(e){console.log("Avatar upload failed",e);});
+          .catch(function(e){logAppError("Avatar upload failed",e);console.log("Avatar upload failed",e);});
       }
     };
     reader.readAsDataURL(f);
@@ -3843,7 +3883,7 @@ function buildProfileBanner(t){
     var newName=prompt("Your name:",ST.name||"");
     if(newName&&newName.trim()){
       ST.name=newName.trim();
-      if(currentUser)db.collection("profiles").doc(currentUser.uid).set({name:ST.name},{merge:true}).catch(function(){});
+      if(currentUser)db.collection("profiles").doc(currentUser.uid).set({name:ST.name},{merge:true}).catch(function(e){logAppError("profiles.set (name edit - profile banner)",e);});
       redraw();
     }
   });
@@ -3861,7 +3901,7 @@ function buildProfileBanner(t){
       if(currentUser){
         storage.ref("wallpapers/"+currentUser.uid+".jpg").putString(e.target.result,"data_url")
           .then(function(snap){return snap.ref.getDownloadURL();})
-          .then(function(url){ST.profileWallpaper=url;db.collection("profiles").doc(currentUser.uid).set({wallpaper:url},{merge:true}).catch(function(){});redraw();})
+          .then(function(url){ST.profileWallpaper=url;db.collection("profiles").doc(currentUser.uid).set({wallpaper:url},{merge:true}).catch(function(e){logAppError("profiles.set (wallpaper upload)",e);});redraw();})
           .catch(function(){redraw();});
       }
       redraw();
@@ -3969,6 +4009,7 @@ function buildInviteCard(){
             }).catch(function(){fallbackCopy(link,btn,gtc.a);});
           } else {fallbackCopy(link,btn,gtc.a);}
         }).catch(function(e){
+          logAppError("invite link generation failed",e);
           btn.textContent="Copy Link";btn.style.background=gtc.a;
           alert("Could not generate invite link. Try again.");
         });
@@ -3988,7 +4029,7 @@ function buildNameCard(){
   eni.value=ST.name;eni.addEventListener("input",function(){ST.name=this.value;});
   eni.addEventListener("change",function(){
     try{localStorage.setItem("ku_name",ST.name);}catch(e){}
-    if(currentUser)db.collection("profiles").doc(currentUser.uid).set({name:ST.name},{merge:true}).catch(function(){});
+    if(currentUser)db.collection("profiles").doc(currentUser.uid).set({name:ST.name},{merge:true}).catch(function(e){logAppError("profiles.set (name edit - name card)",e);});
     redraw();
   });
   enp.appendChild(eni);enc.appendChild(enp);
@@ -4006,7 +4047,7 @@ function buildAvatarPickerCard(t){
   apFi.addEventListener("change",function(){var f=this.files&&this.files[0];if(!f)return;var r=new FileReader();r.onload=function(e){ST.avatar=e.target.result;try{localStorage.setItem("ku_av",ST.avatar);}catch(e2){}
     // Only save emoji avatars directly - photo URLs already saved by upload handler
     if(currentUser&&ST.avatar&&!ST.avatar.startsWith("data:")){
-      db.collection("profiles").doc(currentUser.uid).set({av:ST.avatar},{merge:true}).catch(function(){});
+      db.collection("profiles").doc(currentUser.uid).set({av:ST.avatar},{merge:true}).catch(function(e){logAppError("profiles.set (avatar - avatar picker upload)",e);});
     }
     redraw();};r.readAsDataURL(f);});
   apC.addEventListener("click",function(){apFi.click();});
@@ -4018,7 +4059,7 @@ function buildAvatarPickerCard(t){
     var ab=b({css:{width:"42px",height:"42px",borderRadius:"12px",background:ST.avatar===a?t.ap:"#FAF6F0",border:"2px solid "+(ST.avatar===a?t.a:"rgba(107,66,38,.12)"),fontSize:"22px",cursor:"pointer",fontFamily:"inherit"}},a);
     ab.addEventListener("click",function(){
       ST.avatar=a;try{localStorage.setItem("ku_av",a);}catch(e){}
-      if(currentUser)db.collection("profiles").doc(currentUser.uid).set({av:a},{merge:true}).catch(function(){});
+      if(currentUser)db.collection("profiles").doc(currentUser.uid).set({av:a},{merge:true}).catch(function(e){logAppError("profiles.set (avatar - avatar picker emoji)",e);});
       redraw();
     });apg.appendChild(ab);
   });
@@ -4078,12 +4119,12 @@ function buildOwnBirthdayCard(t){
     var bdayStr=MNAMES3[m-1]+" "+dy;
     localStorage.setItem("ku_bday_"+(currentUser?currentUser.uid:""),bdayStr);
     if(currentUser){
-      db.collection("profiles").doc(currentUser.uid).set({birthdayMonth:m,birthdayDay:dy,birthday:true},{merge:true}).catch(function(){});
+      db.collection("profiles").doc(currentUser.uid).set({birthdayMonth:m,birthdayDay:dy,birthday:true},{merge:true}).catch(function(e){logAppError("profiles.set (own birthday save)",e);});
       ST.groups.forEach(function(g){
         var bdayId="member-"+currentUser.uid;
         var safeAv=ST.avatar&&ST.avatar.startsWith("http")?ST.avatar:(ST.avatar&&ST.avatar.length<=8?ST.avatar:"👤");
         var bdayObj={id:bdayId,name:ST.name,av:safeAv,month:m,day:dy,groupId:g.id,auto:true};
-        db.collection("groups").doc(g.id).collection("birthdays").doc(bdayId).set(bdayObj).catch(function(){});
+        db.collection("groups").doc(g.id).collection("birthdays").doc(bdayId).set(bdayObj).catch(function(e){logAppError("groups/birthdays.set (add family member birthday)",e);});
         var ei=ST.birthdays.findIndex(function(bd){return bd.id===bdayId;});
         if(ei>=0)ST.birthdays[ei]=bdayObj;else ST.birthdays.push(bdayObj);
       });
@@ -4112,7 +4153,7 @@ function buildSimpleToggle(label,sub,stField,fsField){
     sKnob.style.left=nowOn?"21px":"3px";
     if(currentUser){
       var upd={};upd[fsField]=ST[stField];
-      db.collection("fcmTokens").doc(currentUser.uid).set(upd,{merge:true}).catch(function(e){console.log("pref save failed",e);showTopToast("Couldn't save that preference - check your connection.");});
+      db.collection("fcmTokens").doc(currentUser.uid).set(upd,{merge:true}).catch(function(e){logAppError("pref save failed",e);console.log("pref save failed",e);showTopToast("Couldn't save that preference - check your connection.");});
     }
   });
   sRow.appendChild(sToggle);
@@ -4148,7 +4189,7 @@ function buildNotificationsCard(){
         if(currentUser){
           db.collection("fcmTokens").doc(currentUser.uid).set({
             mutedGroups:ST.mutedGroups
-          },{merge:true}).catch(function(e){console.log("mute pref save failed",e);showTopToast("Couldn't save that preference - check your connection.");});
+          },{merge:true}).catch(function(e){logAppError("mute pref save failed",e);console.log("mute pref save failed",e);showTopToast("Couldn't save that preference - check your connection.");});
         }
       });
     })(g.id,toggle,knob);
@@ -4185,7 +4226,10 @@ function buildErrorLogCard(){
   errViewBtn.addEventListener("click",function(){
     if(errList.style.display==="block"){errList.style.display="none";return;}
     errViewBtn.textContent="Loading...";
-    db.collection("errorLogs").orderBy("createdAt","desc").limit(20).get().then(function(snap){
+    // Bumped from 20 - operation-level failures (a failed Firestore write,
+    // not just uncaught JS crashes) now flow through this same log, so a
+    // busy family group will fill 20 entries a lot faster than before.
+    db.collection("errorLogs").orderBy("createdAt","desc").limit(40).get().then(function(snap){
       errViewBtn.textContent="View Recent Errors";
       errList.innerHTML="";
       if(snap.empty){
@@ -4232,12 +4276,12 @@ function buildDeleteAccountButton(){
         // targeted a doc that never existed, so it silently did nothing and
         // every group membership stuck around after "deleting" the account.
         (ST.groups||[]).forEach(function(g){
-          db.collection("members").doc(uid+"_"+g.id).delete().catch(function(){});
+          db.collection("members").doc(uid+"_"+g.id).delete().catch(function(e){logAppError("members.delete (account deletion cleanup)",e);});
         });
-        db.collection("userGroups").doc(uid).delete().catch(function(){});
-        db.collection("fcmTokens").doc(uid).delete().catch(function(){});
+        db.collection("userGroups").doc(uid).delete().catch(function(e){logAppError("userGroups.delete (account deletion cleanup)",e);});
+        db.collection("fcmTokens").doc(uid).delete().catch(function(e){logAppError("fcmTokens.delete (account deletion cleanup)",e);});
         // Delete Firebase Auth account
-        currentUser.delete().catch(function(){});
+        currentUser.delete().catch(function(e){logAppError("auth currentUser.delete (account deletion - Auth record)",e);});
       }
       // Clear local state
       try{localStorage.clear();}catch(e){}
@@ -4370,6 +4414,7 @@ function buildAddEvent(t){
     postEvent(ev).then(function(){
       ST.nEv={title:"",month:"APR",day:"",time:"",loc:"",groupId:"imm",multiDay:false,endMonth:"APR",endDay:"",lat:null,lng:null};ST.addEv=false;ST.calSelDay=savedDay;redraw();
     }).catch(function(e){
+      logAppError("event save failed",e);
       console.log("event save failed",e);
       sub.textContent=origLabel;sub.disabled=false;sub.style.opacity="1";
       showTopToast("Couldn't save that event — check your connection and try again.");
@@ -4762,15 +4807,15 @@ function buildCreateGroup(){
         groupId:newGid,groupLabel:newGroup.label,isAdmin:true,
         joinedAt:firebase.firestore.FieldValue.serverTimestamp()
       });
-    }).catch(function(e){console.log("group create failed",e);});
+    }).catch(function(e){logAppError("group create failed",e);console.log("group create failed",e);});
     ST.group=newGid;ST.creatingGroup=false;
     // Save updated groups to localStorage
     try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
     if(currentUser){
       db.collection("userGroups").doc(currentUser.uid).set({
         groups:firebase.firestore.FieldValue.arrayUnion(newGroup)
-      },{merge:true}).catch(function(){});
-      db.collection("fcmTokens").doc(currentUser.uid).set({groupIds:ST.groups.map(function(gr){return gr.id;})},{merge:true}).catch(function(){});
+      },{merge:true}).catch(function(e){logAppError("userGroups.set arrayUnion (create group)",e);});
+      db.collection("fcmTokens").doc(currentUser.uid).set({groupIds:ST.groups.map(function(gr){return gr.id;})},{merge:true}).catch(function(e){logAppError("fcmTokens.set (create group)",e);});
     }
     redraw();
   });
@@ -4855,14 +4900,14 @@ function buildEditGroup(gid){
       // base64. Explicitly delete the field when unset so an old photo
       // doesn't keep winning over a newly-picked emoji.
       updateData.photo=g.photo?g.photo:firebase.firestore.FieldValue.delete();
-      db.collection("groups").doc(g.id).set(updateData,{merge:true}).catch(function(e){console.log("group save failed",e);showTopToast("Couldn't save group changes — check your connection.");});
+      db.collection("groups").doc(g.id).set(updateData,{merge:true}).catch(function(e){logAppError("group save failed",e);console.log("group save failed",e);showTopToast("Couldn't save group changes — check your connection.");});
     }
     if(g._photoUploadPromise){
       // A photo upload is still in flight - wait for the real URL instead of
       // saving without it (or saving stale base64).
       var origLabel=saveBtn.textContent;
       saveBtn.textContent="Saving...";saveBtn.disabled=true;
-      g._photoUploadPromise.then(doSave).catch(function(){}).then(function(){
+      g._photoUploadPromise.then(doSave).catch(function(e){logAppError("groups photo upload (edit group)",e);}).then(function(){
         saveBtn.textContent=origLabel;saveBtn.disabled=false;
         ST.editingGroup=null;redraw();
       });
@@ -4907,7 +4952,7 @@ function buildEditBirthdays(){
       // locally and would reappear next time anyone (including you) reloaded.
       if(bk.groupId&&bk.id){
         db.collection("groups").doc(bk.groupId).collection("birthdays").doc(bk.id).delete()
-          .catch(function(e){console.log("birthday delete failed",e);showTopToast("Couldn't remove that birthday — check your connection.");});
+          .catch(function(e){logAppError("birthday delete failed",e);console.log("birthday delete failed",e);showTopToast("Couldn't remove that birthday — check your connection.");});
       }
     });
     row.appendChild(delB);sh.appendChild(row);
@@ -4947,7 +4992,7 @@ function buildEditBirthdays(){
     // Save to Firestore
     if(currentUser){
       db.collection("groups").doc(ST.group).collection("birthdays").doc(newBday.id).set(newBday)
-        .catch(function(e){console.log("birthday save failed",e);});
+        .catch(function(e){logAppError("birthday save failed",e);console.log("birthday save failed",e);});
     }
     nameIn.value="";dayIn.value="";redraw();
   });
@@ -5015,7 +5060,7 @@ var mems=fbMems.length?fbMems.map(function(m){
       createdBy:senderUid2,
       last:"",lt:"",
       createdAt:firebase.firestore.FieldValue.serverTimestamp()
-    }).catch(function(e){console.log("DM meta save failed",e);});
+    }).catch(function(e){logAppError("DM meta save failed",e);console.log("DM meta save failed",e);});
     // Start listening to this new DM immediately so messages appear in real time
     (function(dmId){
       var unsub=db.collection("dms").doc(dmId).collection("msgs")
@@ -5054,7 +5099,7 @@ function syncRsvp(evId,going,groupId){
   db.collection("rsvps").doc(evId+"_"+uid).set({
     evId:String(evId),uid:uid,name:ST.name,av:ST.avatar,going:going,groupId:groupId||"imm",
     updatedAt:firebase.firestore.FieldValue.serverTimestamp()
-  }).catch(function(e){console.log("rsvp sync failed",e);});
+  }).catch(function(e){logAppError("rsvp sync failed",e);console.log("rsvp sync failed",e);});
 }
 
 function submitPost(){
@@ -5066,11 +5111,20 @@ function submitPost(){
   var postType=ST.upType;
   var postStatus=ST.upCi;
   var postCap=ST.upCap;
-  var postGroup=ST.group;
+  // ST.group (the currently-selected group id) has been seen going missing
+  // separately from the ST.groups array itself - falling back here means the
+  // optimistic post shown immediately below never gets built with an
+  // undefined groupId, and postToFeed() below has its own backfill/refusal
+  // as a second line of defense on the actual Firestore write.
+  var postGroup=ST.group||(ST.groups[0]&&ST.groups[0].id);
   var postName=ST.name||"You";
   var postAv=ST.avatar;
 
   if(postType==="checkin"&&!postStatus.trim())return;
+  if(!postGroup){
+    showTopToast("Couldn't tell which family group to post to — try reopening the app.");
+    return;
+  }
 
   // Close sheet immediately
   ST.upOpen=false;ST.upStep=1;ST.upCi="";ST.upCap="";
@@ -5091,7 +5145,7 @@ ST.upImg=null;ST.upPhotos=[];
         ST.feed[postGroup].sort(function(a,b){return tsMillis(b.createdAt)-tsMillis(a.createdAt);});
         redraw();
       });
-    }).catch(function(e){console.log("checkin post failed",e);});
+    }).catch(function(e){logAppError("checkin post failed",e);console.log("checkin post failed",e);});
   } else {
     p={type:isVid?"video":"photo",isVideo:isVid,av:postAv,name:postName,time:"Just now",emoji:"\uD83C\uDF3B",imgUrl:null,cap:postCap,groupId:postGroup,groupLabel:postGroupLabel};
     // Must have real Firebase auth uid for Storage
@@ -5195,6 +5249,7 @@ ST.upImg=null;ST.upPhotos=[];
         redraw();
       }).catch(function(){redraw();});
     }).catch(function(e){
+      logAppError("photo/video post failed",e);
       console.log("photo post failed:",e.message||e);
       if(isVid&&vidFile){try{URL.revokeObjectURL(localPreviewUrl);}catch(e2){}}
       // Remove temp post only - do NOT post without the image, and do NOT
@@ -5227,7 +5282,7 @@ function addComment(){
   ST.cmtIn="";redraw();
   db.collection("comments").add(Object.assign({},cmt,{
     createdAt:firebase.firestore.FieldValue.serverTimestamp()
-  })).catch(function(e){console.log("comment failed",e);});
+  })).catch(function(e){logAppError("comment failed",e);console.log("comment failed",e);});
 }
 
 // Check for invite link ?join=GroupName&icon=emoji
@@ -5352,19 +5407,20 @@ function joinAdditionalGroupViaToken(token){
     db.collection("userGroups").doc(currentUser.uid).set({
       groups:firebase.firestore.FieldValue.arrayUnion(newGroup),
       updatedAt:firebase.firestore.FieldValue.serverTimestamp()
-    },{merge:true}).catch(function(){});
+    },{merge:true}).catch(function(e){logAppError("userGroups.set arrayUnion (join additional group)",e);});
     db.collection("members").doc(currentUser.uid+"_"+gid).set({
       uid:currentUser.uid,name:ST.name,av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),
       groupId:gid,groupLabel:newGroup.label,groupIcon:newGroup.icon,isAdmin:false,
       joinedAt:firebase.firestore.FieldValue.serverTimestamp()
-    }).catch(function(){});
-    db.collection("inviteTokens").doc(token).update({used:true,usedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(){});
-    db.collection("fcmTokens").doc(currentUser.uid).set({groupIds:ST.groups.map(function(gr){return gr.id;})},{merge:true}).catch(function(){});
+    }).catch(function(e){logAppError("members.set (join additional group)",e);});
+    db.collection("inviteTokens").doc(token).update({used:true,usedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(e){logAppError("inviteTokens.update (mark used - join additional group)",e);});
+    db.collection("fcmTokens").doc(currentUser.uid).set({groupIds:ST.groups.map(function(gr){return gr.id;})},{merge:true}).catch(function(e){logAppError("fcmTokens.set (join additional group)",e);});
     ST.group=gid;ST.tab="feed";ST.appReady=true;
     fetchAllFeeds();syncOn();
     showTopToast("Joined "+newGroup.label+"! \uD83C\uDF89");
     redraw();
   }).catch(function(e){
+    logAppError("join additional group failed (invite token lookup)",e);
     console.log("join additional group failed",e);
     showTopToast("Couldn't check that invite link — check your connection and try the link again.");
     ST.appReady=true;redraw();
@@ -5391,6 +5447,7 @@ function processInviteToken(token){
     ST.appReady=true; // Show onboarding not splash
     redraw();
   }).catch(function(e){
+    logAppError("processInviteToken failed (invite token lookup)",e);
     console.log("token error:",e);
     ST.inviteError="We couldn't check that invite link right now — this is usually a connection issue. You can try again, or create your own group below.";
     redraw();
@@ -5594,7 +5651,7 @@ auth.onAuthStateChanged(function(user){
                 try{localStorage.setItem("ku_grp",JSON.stringify({label:ST.groups[0].label,icon:ST.groups[0].icon}));}catch(e){}
               }
               finishSignin();
-            }).catch(function(e){console.log("rebuildUserGroups failed",e);finishSignin();});
+            }).catch(function(e){logAppError("rebuildUserGroups failed",e);console.log("rebuildUserGroups failed",e);finishSignin();});
           }
         }).catch(function(){
           ST.boarded=true;
@@ -5626,7 +5683,7 @@ auth.onAuthStateChanged(function(user){
             db.collection("profiles").doc(user.uid).set({
               name:localName||ST.name||"Family member",
               av:ST.avatar||"\uD83D\uDC64"
-            },{merge:true}).catch(function(e){console.log("self-heal profile failed",e);});
+            },{merge:true}).catch(function(e){logAppError("self-heal profile failed",e);console.log("self-heal profile failed",e);});
             db.collection("members").doc(user.uid+"_"+rebuiltGroup.id).set({
               uid:user.uid,
               name:localName||ST.name||"Family member",
@@ -5637,7 +5694,7 @@ auth.onAuthStateChanged(function(user){
               selfHealed:true
             },{merge:true}).then(function(){
               console.log("Self-healed profile for",user.uid);
-            }).catch(function(e){console.log("self-heal failed",e);});
+            }).catch(function(e){logAppError("self-heal failed",e);console.log("self-heal failed",e);});
             fetchAllFeeds();syncOn();redraw();
           } else {
             // Genuinely no usable local data anywhere - fall back to onboarding
