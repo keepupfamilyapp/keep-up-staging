@@ -125,12 +125,12 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-09-15T00:00:00Z";
+var APP_VERSION="2026-09-28T20:28:02Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
     .then(function(html){
-      var m=html.match(/var APP_VERSION="([^"]+)"/);
+      var m=html.match(/var APP_VERSION="2026-09-28T20:28:02Z"]+)"/);
       if(m&&m[1]&&m[1]!==APP_VERSION)showUpdateBanner();
     }).catch(function(){/* offline, or the request was blocked - just skip this check, try again next interval */});
 }
@@ -1158,6 +1158,20 @@ function setGroupIcon(container,g){
   }
 }
 
+// Every place ST.groups gets replaced wholesale (Firestore's userGroups doc,
+// the localStorage cache, the rebuildUserGroups repair function) trusted
+// that array's entries as-is. Any entry missing a label/icon - which has
+// happened from more than one past data-repair path - flowed straight
+// through to the header pill and profile screen as the literal string
+// "undefined" (document.createTextNode(undefined) renders as "undefined",
+// not blank). This guarantees every group object always has something
+// sane to show, regardless of what the source data actually contained.
+function normalizeGroups(arr){
+  return (arr||[]).filter(function(g){return g&&g.id;}).map(function(g){
+    return {id:g.id,label:g.label||"Family",icon:g.icon||"❤️",photo:g.photo};
+  });
+}
+
 // ---- Shared helpers used by buildItem/buildProfile (extracted from what
 // used to be copy-pasted 3-5x each across those two ~400-470 line functions) ----
 
@@ -1759,7 +1773,7 @@ function buildOnboarding(){
               ST.boarded=true;localStorage.setItem("ku_ob","1");
               db.collection("userGroups").doc(result.user.uid).get().then(function(gdoc0){
                 if(gdoc0.exists&&gdoc0.data().groups&&gdoc0.data().groups.length>0){
-                  ST.groups=gdoc0.data().groups;
+                  ST.groups=normalizeGroups(gdoc0.data().groups);
                   try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
                 }
                 joinAdditionalGroupViaToken(ST.pendingInviteToken);
@@ -1777,7 +1791,7 @@ function buildOnboarding(){
               db.collection("userGroups").doc(result.user.uid).get().then(function(gdoc){
                 var hasGroups=gdoc.exists&&gdoc.data().groups&&gdoc.data().groups.length>0;
                 if(hasGroups){
-                  ST.groups=gdoc.data().groups;
+                  ST.groups=normalizeGroups(gdoc.data().groups);
                   ST.group=ST.groups[0].id;
                   try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
                   try{localStorage.setItem("ku_grp",JSON.stringify({label:ST.groups[0].label,icon:ST.groups[0].icon}));}catch(e){}
@@ -5398,11 +5412,24 @@ try{
         ST.avatar="\uD83D\uDC68"; // default
       }
     }
-    if(localStorage.getItem("ku_grp")){var sg=JSON.parse(localStorage.getItem("ku_grp"));ST.groups[0].label=sg.label;ST.groups[0].icon=sg.icon;}
+    if(localStorage.getItem("ku_grp")){
+      try{
+        var sg=JSON.parse(localStorage.getItem("ku_grp"));
+        // Only trust cache values that actually exist. This cache is written
+        // as JSON.stringify({label:...,icon:...}) elsewhere - if label/icon
+        // were ever undefined at write time, JSON.stringify silently drops
+        // those keys rather than writing "undefined", so sg.label here comes
+        // back as JS's real undefined too. Blindly assigning it over the
+        // safe "Family" default is exactly what was turning the group name
+        // pill into the literal text "undefined" for real users.
+        if(sg.label)ST.groups[0].label=sg.label;
+        if(sg.icon)ST.groups[0].icon=sg.icon;
+      }catch(e){}
+    }
     if(localStorage.getItem("ku_groups")){
       try{
         var savedGroups=JSON.parse(localStorage.getItem("ku_groups"));
-        if(savedGroups&&savedGroups.length>1)ST.groups=savedGroups;
+        if(savedGroups&&savedGroups.length>1)ST.groups=normalizeGroups(savedGroups);
       }catch(e){}
     }
     // ku_admin defaults to true for existing users
@@ -5503,7 +5530,7 @@ auth.onAuthStateChanged(function(user){
           var hasGroups=gdoc.exists&&gdoc.data().groups&&gdoc.data().groups.length>0;
           if(hasGroups){
             // Replace groups entirely - dont merge with default imm group
-            ST.groups=gdoc.data().groups;
+            ST.groups=normalizeGroups(gdoc.data().groups);
             ST.group=ST.groups[0].id;
             try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
             try{localStorage.setItem("ku_grp",JSON.stringify({label:ST.groups[0].label,icon:ST.groups[0].icon}));}catch(e){}
@@ -5556,7 +5583,12 @@ auth.onAuthStateChanged(function(user){
               var isAdminAnywhere=!!(result.data&&result.data.isAdmin);
               localStorage.setItem("ku_admin",isAdminAnywhere?"1":"0");
               if(rebuiltGroups.length>0){
-                ST.groups=rebuiltGroups;
+                // rebuildUserGroups reconstructs this array from raw `members`
+                // docs server-side, some of which predate groupLabel/groupIcon
+                // being written at all (self-healed docs, old join paths) -
+                // normalize here too so a repair from this path can't itself
+                // hand back a group with no name.
+                ST.groups=normalizeGroups(rebuiltGroups);
                 ST.group=ST.groups[0].id;
                 try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
                 try{localStorage.setItem("ku_grp",JSON.stringify({label:ST.groups[0].label,icon:ST.groups[0].icon}));}catch(e){}
@@ -5581,7 +5613,7 @@ auth.onAuthStateChanged(function(user){
         // through onboarding again (which would create duplicate/wrong groups).
         db.collection("userGroups").doc(user.uid).get().then(function(gdoc){
           var hasGroups=gdoc.exists&&gdoc.data().groups&&gdoc.data().groups.length>0;
-          if(hasGroups){ST.groups=gdoc.data().groups;ST.group=ST.groups[0].id;}
+          if(hasGroups){ST.groups=normalizeGroups(gdoc.data().groups);ST.group=ST.groups[0].id;}
           var localName=localStorage.getItem("ku_name");
           if(localName||hasGroups){
             var rebuiltGroup=ST.groups[0]||{id:"imm",label:"Family",icon:"\u2764\uFE0F"};
