@@ -143,12 +143,12 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-09-28T22:31:02Z";
+var APP_VERSION="2026-09-15T00:00:00Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
     .then(function(html){
-      var m=html.match(/var APP_VERSION="2026-09-28T22:31:02Z"]+)"/);
+      var m=html.match(/var APP_VERSION="([^"]+)"/);
       if(m&&m[1]&&m[1]!==APP_VERSION)showUpdateBanner();
     }).catch(function(){/* offline, or the request was blocked - just skip this check, try again next interval */});
 }
@@ -223,8 +223,15 @@ var CF_FUNC_URL=IS_STAGING?"https://us-central1-keep-up-staging.cloudfunctions.n
 
 function uploadToCloudflareStream(file,onProgress){
   // Step 1: ask our Cloud Function for a one-time, single-use Cloudflare
-  // upload URL (small JSON exchange, no video bytes sent here).
-  return fetch(CF_FUNC_URL,{method:"POST"})
+  // upload URL (small JSON exchange, no video bytes sent here). The function
+  // now requires a valid Firebase ID token (see keep-up-functions) - without
+  // this header it answers 401, which previously let anyone on the internet
+  // mint themselves a free upload slot with no proof they were even signed
+  // into the app.
+  if(!currentUser)return Promise.reject(new Error("Not signed in"));
+  return currentUser.getIdToken().then(function(idToken){
+    return fetch(CF_FUNC_URL,{method:"POST",headers:{"Authorization":"Bearer "+idToken}});
+  })
     .then(function(r){return r.json();})
     .then(function(data){
       var uid=data.result&&data.result.uid;
@@ -705,7 +712,7 @@ function doSync(){
         snap.docChanges().forEach(function(change){
           var data=Object.assign({},change.doc.data(),{id:change.doc.id});
           if(change.type==="added"||change.type==="modified"){
-            data.you=(data.name===(ST.name||"You")&&data.av===ST.avatar);
+            data.you=(data.senderUid&&currentUser)?data.senderUid===currentUser.uid:(data.name===(ST.name||"You")&&data.av===ST.avatar);
             // Remove matching optimistic temp message
             if(data.imgUrl&&data.you){
               ST.chatMsgs[gid]=ST.chatMsgs[gid].filter(function(x){
@@ -838,7 +845,7 @@ function doSync(){
               dm.msgs=dm.msgs.filter(function(x){return !(x.id&&x.id.startsWith("tmp-")&&x.text===data.text);});
             }
             if(!dm.msgs.find(function(x){return x.id===data.id;})){
-              data.you=(data.name===(ST.name||"You")&&data.av===ST.avatar);
+              data.you=(data.senderUid&&currentUser)?data.senderUid===currentUser.uid:(data.name===(ST.name||"You")&&data.av===ST.avatar);
               dm.msgs.push(data);dm.last=data.text||"📷";dm.lt=data.createdAt&&data.createdAt.toMillis?data.createdAt.toMillis():Date.now();
               // Only count unread for truly new messages - not already counted ones
               var msgTs=data.createdAt&&data.createdAt.toMillis?data.createdAt.toMillis():0;
@@ -1126,7 +1133,7 @@ var ST={
   feedRendered:{},allReactions:{},upPhotos:[],mutedGroups:[],muteComments:false,muteDailyReminder:false,
   boarded:false,obStep:0,obName:"",obAvatar:"\uD83D\uDC69",obPhoto:null,
   obGrpName:"",obGrpEmoji:"\u2764\uFE0F",obGrpPhoto:null,joinInvite:false,inviteError:null,fbMembers:{},
-  editingGroup:null,editingBirthdays:false,creatingGroup:false,showGroupSwitcher:false,navExpanded:false,showTutorial:false,tutorialStep:0,replyTo:null,profileWallpaper:null,sessionStart:Date.now(),memoryDay:null,memoryPosts:null,appReady:false,
+  editingGroup:null,editingBirthdays:false,creatingGroup:false,showGroupSwitcher:false,navExpanded:false,showTutorial:false,tutorialStep:0,replyTo:null,profileWallpaper:null,sessionStart:Date.now(),memoryDay:null,memoryPosts:null,appReady:false,leaveGroupId:null,
   tab:"feed",group:"imm",name:"Sean",avatar:"\uD83D\uDC68",feedLoading:false,
   openChat:null,
   chatMsgs:{imm:[]},
@@ -1211,6 +1218,13 @@ function normalizeGroups(arr){
 // True when the signed-in user authored this feed item - checked before
 // showing any destructive/owner-only controls on it.
 function isOwnPost(item){
+  // senderUid is the reliable check - name/avatar matching is genuinely
+  // ambiguous in a family app, where it's completely normal for two people
+  // to go by the same name ("Mom", "Dad") or pick the same avatar emoji.
+  // Before this fix, that meant the WRONG family member's edit/delete
+  // controls could show up on someone else's post. Only fall back to the
+  // old heuristic for posts old enough to predate senderUid being stored.
+  if(item.senderUid&&currentUser)return item.senderUid===currentUser.uid;
   return item.name===(ST.name||"You")||item.av===ST.avatar;
 }
 
@@ -2291,6 +2305,7 @@ if(ST.editingGroup)wrap.appendChild(buildEditGroup(ST.editingGroup));
   if(ST.cmtOpen!==null)wrap.appendChild(buildComments(t));
   if(ST.eventDetailId)wrap.appendChild(buildEventDetail(t));
   if(ST.pickingLocation)wrap.appendChild(buildLocationPicker());
+  if(ST.leaveGroupId)wrap.appendChild(buildLeaveGroupModal());
   return wrap;
 }
 
@@ -3819,6 +3834,26 @@ function buildEventDetail(t){
     });
   }
 
+  // Only the person who created the event can delete it - checked by uid,
+  // not name/avatar (see isOwnPost's fix for why that comparison is unsafe
+  // in a family app where names and avatars collide).
+  if(currentUser&&ev.createdBy&&ev.createdBy===currentUser.uid){
+    var delEvBtn=b({css:{width:"100%",padding:"11px",borderRadius:"50px",background:"transparent",border:"1.5px solid #F0B4AC",color:"#C0392B",fontSize:"13px",fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginTop:"16px"}},"Delete Event");
+    delEvBtn.addEventListener("click",function(){
+      if(!confirm("Delete \""+ev.title+"\"? This can't be undone."))return;
+      delEvBtn.textContent="Deleting...";delEvBtn.disabled=true;delEvBtn.style.opacity=".7";
+      db.collection("events").doc(ev.id).delete().then(function(){
+        ST.evs=ST.evs.filter(function(x){return x.id!==ev.id;});
+        ST.eventDetailId=null;redraw();
+      }).catch(function(e){
+        logAppError("events.delete",e);
+        delEvBtn.textContent="Delete Event";delEvBtn.disabled=false;delEvBtn.style.opacity="1";
+        showTopToast("Couldn't delete that event — check your connection and try again.");
+      });
+    });
+    sh.appendChild(delEvBtn);
+  }
+
   ov.appendChild(sh);
   return ov;
 }
@@ -3933,6 +3968,9 @@ function buildGroupsCard(){
     } else {
       row.appendChild(d({css:{background:gt.ap,color:gt.ad,fontSize:"11px",fontWeight:700,padding:"3px 10px",borderRadius:"50px"}},"Member"));
     }
+    var leaveGrpBtn=b({css:{background:"transparent",color:"#C0392B",fontSize:"11px",fontWeight:700,padding:"3px 10px",borderRadius:"50px",border:"1.5px solid #F0B4AC",cursor:"pointer",fontFamily:"inherit",marginLeft:"6px"}},"Leave");
+    (function(grpObj){leaveGrpBtn.addEventListener("click",function(){openLeaveGroupFlow(grpObj.id);});})(g);
+    row.appendChild(leaveGrpBtn);
     // Show Firebase members with admin remove option
     var fbMems2=(ST.fbMembers&&ST.fbMembers[g.id])||[];
     fbMems2.forEach(function(m){
@@ -3965,6 +4003,108 @@ function buildGroupsCard(){
   return gc;
 }
 
+function getGroupAdminStatus(gid){
+  if(!currentUser)return false;
+  var mems=(ST.fbMembers&&ST.fbMembers[gid])||[];
+  var me=mems.find(function(m){return m.uid===currentUser.uid;});
+  return !!(me&&me.isAdmin);
+}
+
+function openLeaveGroupFlow(gid){
+  if(!currentUser){alert("Please wait — still signing you in.");return;}
+  var g=ST.groups.find(function(x){return x.id===gid;});
+  if(!g)return;
+  var amAdmin=getGroupAdminStatus(gid);
+  var others=((ST.fbMembers&&ST.fbMembers[gid])||[]).filter(function(m){return m.uid!==currentUser.uid;});
+  if(amAdmin&&others.length>0){
+    ST.leaveGroupId=gid;redraw();
+    return;
+  }
+  var warnTxt="Leave \""+g.label+"\"?"+(ST.groups.length===1?" This is your only group — you can always create or join another later.":"");
+  if(!confirm(warnTxt))return;
+  performLeaveGroup(gid,null);
+}
+
+function performLeaveGroup(gid,successorUid){
+  if(!currentUser)return;
+  var uid=currentUser.uid;
+  var g=ST.groups.find(function(x){return x.id===gid;});
+  var groupLabel=(g&&g.label)||"the group";
+  var memberDocId=uid+"_"+gid;
+  var tasks=[db.collection("members").doc(memberDocId).delete()];
+  if(successorUid){
+    var sMems=(ST.fbMembers&&ST.fbMembers[gid])||[];
+    var sEntry=sMems.find(function(m){return m.uid===successorUid;});
+    var sDocId=(sEntry&&sEntry._docId)||(successorUid+"_"+gid);
+    tasks.push(db.collection("members").doc(sDocId).set({isAdmin:true},{merge:true}));
+  }
+  Promise.all(tasks).then(function(){
+    return db.collection("userGroups").doc(uid).get();
+  }).then(function(udoc){
+    var curGroups=(udoc.exists&&udoc.data().groups)||[];
+    var newGroups=curGroups.filter(function(x){return x&&x.id!==gid;});
+    return db.collection("userGroups").doc(uid).set({groups:newGroups,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+  }).then(function(){
+    ST.groups=ST.groups.filter(function(x){return x.id!==gid;});
+    delete ST.feed[gid];delete ST.chatMsgs[gid];delete ST.mems[gid];
+    if(ST.fbMembers)delete ST.fbMembers[gid];
+    if(ST.group===gid)ST.group=(ST.groups[0]&&ST.groups[0].id)||null;
+    try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
+    if(ST.groups[0]){try{localStorage.setItem("ku_grp",JSON.stringify({label:ST.groups[0].label,icon:ST.groups[0].icon}));}catch(e){}}
+    var remainingGids=ST.groups.map(function(x){return x.id;});
+    db.collection("fcmTokens").doc(uid).set({groupIds:remainingGids},{merge:true}).catch(function(e){logAppError("fcmTokens.set (leave group)",e);});
+    Promise.all(remainingGids.map(function(rgid){
+      return db.collection("members").doc(uid+"_"+rgid).get().catch(function(){return null;});
+    })).then(function(mdocs){
+      var isAdminAnywhere=mdocs.some(function(md){return md&&md.exists&&md.data().isAdmin;});
+      try{localStorage.setItem("ku_admin",isAdminAnywhere?"1":"0");}catch(e){}
+      redraw();
+    }).catch(function(){redraw();});
+    ST.leaveGroupId=null;
+    showTopToast("You left "+groupLabel+".");
+  }).catch(function(e){
+    logAppError("leaveGroup",e);
+    ST.leaveGroupId=null;
+    showTopToast("Couldn't leave that group — check your connection and try again.");
+    redraw();
+  });
+}
+
+function buildLeaveGroupModal(){
+  var gid=ST.leaveGroupId;
+  var g=ST.groups.find(function(x){return x.id===gid;});
+  var ov=d({cls:"overlay"});ov.addEventListener("click",function(){ST.leaveGroupId=null;redraw();});
+  var sh=d({cls:"sheet"});sh.addEventListener("click",function(e){e.stopPropagation();});
+  sh.appendChild(d({cls:"handle"}));
+  sh.appendChild(d({css:{fontFamily:"Lora,serif",fontSize:"18px",fontWeight:600,color:"#3D2314",marginBottom:"8px"}},"Leave "+(g?g.label:"Group")));
+  sh.appendChild(d({css:{fontSize:"13px",color:"#9B7B62",marginBottom:"16px",lineHeight:"1.5"}},"You're the admin of this group. Pick who should take over before you leave, so the group isn't left without an admin."));
+  var others=((ST.fbMembers&&ST.fbMembers[gid])||[]).filter(function(m){return currentUser&&m.uid!==currentUser.uid;});
+  if(!others.length){
+    sh.appendChild(d({css:{fontSize:"13px",color:"#9B7B62",marginBottom:"14px"}},"No other members to hand off to."));
+  }
+  others.forEach(function(m){
+    var row=d({css:{display:"flex",alignItems:"center",gap:"10px",padding:"9px 0",borderBottom:"1px solid #F5DDD1"}});
+    var av=d({css:{width:"34px",height:"34px",borderRadius:"50%",background:"#F5DDD1",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"17px",overflow:"hidden",flexShrink:0}});
+    renderAvatarGlyph(av,m.av,10,"👤");
+    row.appendChild(av);
+    row.appendChild(d({css:{flex:1,fontSize:"14px",fontWeight:700,color:"#3D2314"}},m.name+(m.isAdmin?" (admin)":"")));
+    var pickBtn=b({css:{padding:"7px 14px",borderRadius:"50px",background:"#C4714A",border:"none",color:"white",fontSize:"12px",fontWeight:700,cursor:"pointer",fontFamily:"inherit"}},"Make Admin & Leave");
+    (function(member){
+      pickBtn.addEventListener("click",function(){
+        if(!confirm("Make "+member.name+" admin of "+(g?g.label:"this group")+" and leave?"))return;
+        pickBtn.textContent="...";pickBtn.disabled=true;
+        performLeaveGroup(gid,member.uid);
+      });
+    })(m);
+    row.appendChild(pickBtn);
+    sh.appendChild(row);
+  });
+  var cancelBtn=b({css:{width:"100%",padding:"12px",borderRadius:"50px",background:"transparent",border:"1.5px solid #F5DDD1",color:"#9B7B62",fontSize:"13px",fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginTop:"14px"}},"Cancel");
+  cancelBtn.addEventListener("click",function(){ST.leaveGroupId=null;redraw();});
+  sh.appendChild(cancelBtn);
+  ov.appendChild(sh);return ov;
+}
+
 function buildStatsRow(t){
   var sc=d({css:{background:"#FFF9F2",borderRadius:"18px",padding:"16px",boxShadow:"0 2px 12px rgba(0,0,0,.08)",marginBottom:"12px",display:"flex"}});
   [[String(ST.groups.length),"Groups"],[String(Object.values(ST.feed).reduce(function(a,b){return a+b.length;},0)),"Posts"],[String(ST.evs.length),"Events"]].forEach(function(s,i){
@@ -3986,7 +4126,7 @@ function buildInviteCard(){
     var ic=d({css:{width:"34px",height:"34px",borderRadius:"50%",background:gt.ap,border:"1.5px solid "+gt.al,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"17px",flexShrink:0,overflow:"hidden"}});setGroupIcon(ic,g);row.appendChild(ic);
     var info=d({css:{flex:1,minWidth:0}});
     info.appendChild(d({css:{fontSize:"13px",fontWeight:700,color:"#3D2314"}},g.label));
-    info.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"1px"}},isAdmin()?"Tap to copy invite link":"Share this link to invite family"));
+    info.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"1px"}},isAdmin()?"Tap to copy invite link (expires in 2 days)":"Share this link to invite family"));
     row.appendChild(info);
     var copyBtn=b({css:{padding:"7px 13px",borderRadius:"50px",background:gt.a,border:"none",color:"white",fontSize:"12px",fontWeight:700,cursor:"pointer",fontFamily:"inherit",flexShrink:0}},"Copy Link");
     (function(grpObj,btn,gtc){
@@ -4268,27 +4408,116 @@ function buildDeleteAccountButton(){
     var dBtn=b({css:{flex:1,padding:"13px",borderRadius:"50px",background:"#C0392B",border:"none",fontSize:"15px",fontWeight:700,color:"white",cursor:"pointer",fontFamily:"inherit"}},"Delete");
     cBtn.addEventListener("click",function(){ov.remove();});
     dBtn.addEventListener("click",function(){
-      ov.remove();
+      cBtn.disabled=true;dBtn.disabled=true;dBtn.textContent="Deleting...";dBtn.style.opacity=".7";
       var uid=currentUser?currentUser.uid:null;
-      if(uid){
-        // Delete Firestore data. Membership docs are keyed "{uid}_{groupId}",
-        // not bare uid - the old members.doc(uid).delete() below always
-        // targeted a doc that never existed, so it silently did nothing and
-        // every group membership stuck around after "deleting" the account.
-        (ST.groups||[]).forEach(function(g){
-          db.collection("members").doc(uid+"_"+g.id).delete().catch(function(e){logAppError("members.delete (account deletion cleanup)",e);});
-        });
-        db.collection("userGroups").doc(uid).delete().catch(function(e){logAppError("userGroups.delete (account deletion cleanup)",e);});
-        db.collection("fcmTokens").doc(uid).delete().catch(function(e){logAppError("fcmTokens.delete (account deletion cleanup)",e);});
-        // Delete Firebase Auth account
-        currentUser.delete().catch(function(e){logAppError("auth currentUser.delete (account deletion - Auth record)",e);});
+      var authedPhone=currentUser&&currentUser.phoneNumber;
+
+      function finishLocalReset(authFullyDeleted){
+        try{localStorage.clear();}catch(e){}
+        auth.signOut().catch(function(){});
+        ST.boarded=false;ST.obStep=0;
+        ST.obGrpName="";ST.obGrpEmoji="❤️";
+        ov.remove();
+        redraw();
+        if(!authFullyDeleted){
+          showTopToast("Your account data was deleted. If you sign back in with the same number, you may be asked to verify again.");
+        }
       }
-      // Clear local state
-      try{localStorage.clear();}catch(e){}
-      auth.signOut().catch(function(){});
-      ST.boarded=false;ST.obStep=0;
-      ST.obGrpName="";ST.obGrpEmoji="❤️";
-      redraw();
+
+      function showCodeStep(confirmResult){
+        sh.innerHTML="";
+        sh.appendChild(d({css:{fontSize:"18px",fontWeight:800,color:"#3D2314",marginBottom:"8px",textAlign:"center"}},"Enter the code"));
+        sh.appendChild(d({css:{fontSize:"13px",color:"#9B7B62",textAlign:"center",marginBottom:"16px",lineHeight:"1.6"}},"Check your texts for a 6-digit code."));
+        var codeIn=document.createElement("input");codeIn.type="tel";codeIn.inputMode="numeric";codeIn.maxLength=6;codeIn.placeholder="123456";
+        codeIn.style.cssText="width:100%;padding:14px 16px;border-radius:14px;border:2px solid #E8956D;background:#FFF9F2;font-size:24px;color:#3D2314;outline:none;font-family:inherit;margin-bottom:12px;text-align:center;letter-spacing:8px;box-sizing:border-box;";
+        sh.appendChild(codeIn);
+        var verifyBtn=b({css:{width:"100%",padding:"13px",borderRadius:"50px",background:"#C4714A",border:"none",color:"white",fontSize:"15px",fontWeight:800,cursor:"pointer",fontFamily:"inherit",marginBottom:"10px"}},"Verify & Finish Deleting");
+        var skipBtn2=b({css:{width:"100%",padding:"10px",borderRadius:"50px",background:"transparent",border:"none",color:"#9B7B62",fontSize:"13px",cursor:"pointer",fontFamily:"inherit"}},"Skip — just sign me out");
+        sh.appendChild(verifyBtn);sh.appendChild(skipBtn2);
+        skipBtn2.addEventListener("click",function(){finishLocalReset(false);});
+        verifyBtn.addEventListener("click",function(){
+          var code=codeIn.value.trim();
+          if(code.length!==6)return;
+          verifyBtn.textContent="Verifying...";verifyBtn.disabled=true;
+          confirmResult.confirm(code).then(function(){
+            return currentUser.delete();
+          }).then(function(){
+            finishLocalReset(true);
+          }).catch(function(e){
+            logAppError("account deletion reauth (verify code / final delete)",e);
+            verifyBtn.textContent="Verify & Finish Deleting";verifyBtn.disabled=false;
+            showTopToast("That code didn't work — check it and try again.");
+          });
+        });
+        setTimeout(function(){codeIn.focus();},80);
+      }
+
+      function showReauthStep(){
+        sh.innerHTML="";
+        sh.appendChild(d({css:{fontSize:"18px",fontWeight:800,color:"#3D2314",marginBottom:"8px",textAlign:"center"}},"Confirm it's you"));
+        sh.appendChild(d({css:{fontSize:"13px",color:"#9B7B62",textAlign:"center",marginBottom:"16px",lineHeight:"1.6"}},"Your data has been deleted. For security, Firebase needs you to verify your phone number one more time to fully remove your sign-in record. We'll text a code to "+authedPhone+"."));
+        var rcDiv=document.createElement("div");rcDiv.id="recaptcha-container-delacc";sh.appendChild(rcDiv);
+        var sendBtn=b({css:{width:"100%",padding:"13px",borderRadius:"50px",background:"#C4714A",border:"none",color:"white",fontSize:"15px",fontWeight:800,cursor:"pointer",fontFamily:"inherit",marginBottom:"10px"}},"Send Code");
+        var skipBtn=b({css:{width:"100%",padding:"10px",borderRadius:"50px",background:"transparent",border:"none",color:"#9B7B62",fontSize:"13px",cursor:"pointer",fontFamily:"inherit"}},"Skip — just sign me out");
+        sh.appendChild(sendBtn);sh.appendChild(skipBtn);
+        skipBtn.addEventListener("click",function(){finishLocalReset(false);});
+        sendBtn.addEventListener("click",function(){
+          sendBtn.textContent="Sending...";sendBtn.disabled=true;
+          try{
+            var verifier=new firebase.auth.RecaptchaVerifier("recaptcha-container-delacc",{size:"invisible",callback:function(){}});
+            verifier.render().then(function(){
+              return currentUser.reauthenticateWithPhoneNumber(authedPhone,verifier);
+            }).then(function(confirmResult){
+              showCodeStep(confirmResult);
+            }).catch(function(e){
+              logAppError("account deletion reauth (send code)",e);
+              sendBtn.textContent="Send Code";sendBtn.disabled=false;
+              showTopToast("Couldn't send the verification code. Check your connection and try again.");
+            });
+          }catch(e){
+            logAppError("account deletion reauth (recaptcha init)",e);
+            sendBtn.textContent="Send Code";sendBtn.disabled=false;
+            showTopToast("Couldn't start verification. Check your connection and try again.");
+          }
+        });
+      }
+
+      function attemptAuthDelete(){
+        if(!currentUser){finishLocalReset(true);return;}
+        currentUser.delete().then(function(){
+          finishLocalReset(true);
+        }).catch(function(e){
+          logAppError("auth currentUser.delete (account deletion - Auth record)",e);
+          // Firebase requires a *recent* sign-in for an account-deleting
+          // action. A user who verified their phone days/weeks ago will
+          // reliably hit this - the old code just swallowed the error here,
+          // so the Auth record silently survived while everything else
+          // about the account vanished. Give them a path to finish it
+          // instead of pretending it worked.
+          if(e&&e.code==="auth/requires-recent-login"&&authedPhone){
+            showReauthStep();
+          } else {
+            finishLocalReset(false);
+          }
+        });
+      }
+
+      if(uid){
+        // Delete Firestore data first, while the still-valid session can
+        // pass the security rules that key off request.auth.uid - membership
+        // docs are keyed "{uid}_{groupId}", not bare uid (the old
+        // members.doc(uid).delete() below always targeted a doc that never
+        // existed, so it silently did nothing and every group membership
+        // stuck around after "deleting" the account).
+        var cleanupTasks=(ST.groups||[]).map(function(g){
+          return db.collection("members").doc(uid+"_"+g.id).delete().catch(function(e){logAppError("members.delete (account deletion cleanup)",e);});
+        });
+        cleanupTasks.push(db.collection("userGroups").doc(uid).delete().catch(function(e){logAppError("userGroups.delete (account deletion cleanup)",e);}));
+        cleanupTasks.push(db.collection("fcmTokens").doc(uid).delete().catch(function(e){logAppError("fcmTokens.delete (account deletion cleanup)",e);}));
+        Promise.all(cleanupTasks).then(attemptAuthDelete);
+      } else {
+        finishLocalReset(true);
+      }
     });
     row.appendChild(cBtn);row.appendChild(dBtn);sh.appendChild(row);
     ov.appendChild(sh);document.body.appendChild(ov);
@@ -4723,7 +4952,27 @@ function buildComments(t){
     }
     row.appendChild(av);
     var cd=d({css:{flex:1}});var cb2=d({css:{background:t.bg,borderRadius:"5px 13px 13px 13px",padding:"8px 11px",border:"1px solid "+t.ap}});
-    cb2.appendChild(d({css:{fontSize:"11px",fontWeight:800,color:t.ad,marginBottom:"2px"}},c.name));cb2.appendChild(d({css:{fontSize:"13px",color:"#3D2314",lineHeight:"1.5"}},c.text));cd.appendChild(cb2);
+    var cb2Hdr=d({css:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px",marginBottom:"2px"}});
+    cb2Hdr.appendChild(d({css:{fontSize:"11px",fontWeight:800,color:t.ad}},c.name));
+    var isOwnComment=!!(currentUser&&c.uid&&c.uid===currentUser.uid);
+    var isGroupAdminForComment=!!(currentUser&&c.groupId&&ST.fbMembers&&ST.fbMembers[c.groupId]&&ST.fbMembers[c.groupId].find(function(m){return m.uid===currentUser.uid&&m.isAdmin;}));
+    if(isOwnComment||isGroupAdminForComment){
+      var cDel=b({css:{background:"none",border:"none",color:"#B99A82",fontSize:"11px",fontWeight:700,cursor:"pointer",fontFamily:"inherit",padding:"0",flexShrink:0}},"Delete");
+      cDel.addEventListener("click",function(){
+        if(!confirm("Delete this comment?"))return;
+        cDel.textContent="...";cDel.disabled=true;
+        db.collection("comments").doc(c.id).delete().then(function(){
+          if(ST.comments[c.postId]){ST.comments[c.postId]=ST.comments[c.postId].filter(function(x){return x.id!==c.id;});}
+          redraw();
+        }).catch(function(e){
+          logAppError("comments.delete",e);
+          cDel.textContent="Delete";cDel.disabled=false;
+          showTopToast("Couldn't delete that comment \u2014 check your connection and try again.");
+        });
+      });
+      cb2Hdr.appendChild(cDel);
+    }
+    cb2.appendChild(cb2Hdr);cb2.appendChild(d({css:{fontSize:"13px",color:"#3D2314",lineHeight:"1.5"}},c.text));cd.appendChild(cb2);
     cd.appendChild(d({css:{fontSize:"10px",color:"#9B7B62",marginTop:"2px"}},c.time));row.appendChild(cd);list.appendChild(row);
   });sh.appendChild(list);
   var ft=d({css:{padding:"10px 14px 16px",borderTop:"1px solid "+t.ap,display:"flex",gap:"6px",alignItems:"center",flexShrink:0}});
@@ -5044,6 +5293,21 @@ var mems=fbMems.length?fbMems.map(function(m){
       selMems=(ST.mems[ST.dmGrp]||[]).filter(function(m){return ST.dmSel.includes(m.av+m.name);});
     }
     if(!selMems.length)selMems=[{av:"\uD83D\uDC64",name:"Family member"}];
+    // "New Message" always minted a fresh dm-<timestamp> thread, even when a
+    // conversation with this exact set of people already existed - tapping
+    // it a second time for the same person (easy to do - nothing here
+    // surfaces an existing thread) silently forked their message history
+    // into two separate, un-mergeable threads. Reuse the existing one
+    // instead whenever the selected participants match exactly.
+    var selUidSig=selMems.map(function(m){return m.uid||"";}).filter(Boolean).sort().join(",");
+    var existingDm=selUidSig&&(ST.dms||[]).find(function(dmx){
+      var dmUidSig=(dmx.members||[]).map(function(m){return m.uid||"";}).filter(Boolean).sort().join(",");
+      return dmUidSig&&dmUidSig===selUidSig;
+    });
+    if(existingDm){
+      ST.newDm=false;ST.dmSel=[];ST.openChat=existingDm.id;ST.tab="chat";redraw();
+      return;
+    }
     var nid="dm-"+Date.now();if(!ST.dms)ST.dms=[];
     ST.dms.unshift({id:nid,members:selMems,last:"",lt:"Now",msgs:[]});
     // Save DM metadata to Firestore so it persists across sessions
@@ -5073,7 +5337,7 @@ var mems=fbMems.length?fbMems.map(function(m){
               // Remove any matching optimistic temp message first
               dm.msgs=dm.msgs.filter(function(x){return !x.id.startsWith("tmp-")||x.text!==data.text;});
               if(!dm.msgs.find(function(x){return x.id===data.id;})){
-                data.you=(data.name===(ST.name||"You")&&data.av===ST.avatar);
+                data.you=(data.senderUid&&currentUser)?data.senderUid===currentUser.uid:(data.name===(ST.name||"You")&&data.av===ST.avatar);
                 dm.msgs.push(data);dm.last=data.text||"📷";dm.lt=data.createdAt&&data.createdAt.toMillis?data.createdAt.toMillis():Date.now();
               }
             }
@@ -5384,6 +5648,18 @@ function showTopToast(msg){
   document.body.appendChild(toast);
   setTimeout(function(){toast.remove();},3500);
 }
+// Invite links used to work forever - a token generated once and reused
+// months later (or picked up from somewhere it shouldn't be, like a logged
+// error's URL) could still add a stranger to a family group. Links now go
+// stale after a couple of days; generating a fresh one from the Invite
+// Family card is always free and instant, so this costs legitimate users
+// nothing.
+var INVITE_TOKEN_TTL_MS=1000*60*60*24*2; // 2 days
+function isInviteTokenExpired(data){
+  var createdMs=data&&data.createdAt&&typeof data.createdAt.toMillis==="function"?data.createdAt.toMillis():null;
+  if(!createdMs)return false; // no timestamp yet (shouldn't happen once the server resolves it) - don't block on it
+  return (Date.now()-createdMs)>INVITE_TOKEN_TTL_MS;
+}
 function joinAdditionalGroupViaToken(token){
   db.collection("inviteTokens").doc(token).get().then(function(doc){
     if(!doc.exists||doc.data().used){
@@ -5392,6 +5668,11 @@ function joinAdditionalGroupViaToken(token){
       return;
     }
     var data=doc.data();
+    if(isInviteTokenExpired(data)){
+      showTopToast("That invite link has expired. Ask an admin in "+(data.groupLabel||"that group")+" for a fresh one.");
+      ST.appReady=true;redraw();
+      return;
+    }
     var gid=data.groupId;
     if(!gid){showTopToast("Something went wrong with that invite link.");ST.appReady=true;redraw();return;}
     var alreadyMember=ST.groups.some(function(g){return g.id===gid;});
@@ -5435,6 +5716,10 @@ function processInviteToken(token){
     var data=doc.data();
     if(data.used){
       ST.inviteError="This invite link has already been used. If you're trying to join "+(data.groupLabel||"a family group")+", ask an admin in that group to send you a fresh invite link. In the meantime, you can create your own group below.";
+      redraw();return;
+    }
+    if(isInviteTokenExpired(data)){
+      ST.inviteError="This invite link has expired. Ask an admin in "+(data.groupLabel||"that group")+" to send you a fresh invite link. In the meantime, you can create your own group below.";
       redraw();return;
     }
     // Dont mark used until onboarding completes
