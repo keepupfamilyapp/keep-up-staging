@@ -593,6 +593,7 @@ function getThumbUrl(url){
 // the UI silently frozen with no explanation.
 function handleGroupListenerErr(err,gid){
   console.log("group listener error:",gid,err&&err.code,err);
+  if(!currentUser)return; // signed out (or mid-signout) - not a real membership change
   if(err&&err.code==="permission-denied"&&gid){
     var wasCurrent=ST.group===gid;
     var removedGroup=ST.groups.find(function(x){return x.id===gid;});
@@ -611,6 +612,7 @@ function handleGroupListenerErr(err,gid){
 var _lastConnErrToastAt=0;
 function handleGenericListenerErr(err,label){
   console.log(label+" listener error:",err&&err.code,err);
+  if(!currentUser)return; // signed out (or mid-signout) - nothing to surface
   var now=Date.now();
   if(now-_lastConnErrToastAt<15000)return; // avoid multiple listeners all toasting at once
   _lastConnErrToastAt=now;
@@ -2149,7 +2151,11 @@ function buildNoGroupsScreen(){
   var signOutBtn=document.createElement("button");
   signOutBtn.textContent="Sign out";
   signOutBtn.style.cssText="margin-top:14px;background:none;border:none;color:#9B7B62;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;text-decoration:underline;";
-  signOutBtn.addEventListener("click",function(){firebase.auth().signOut().then(function(){location.reload();});});
+  signOutBtn.addEventListener("click",function(){
+    unsubscribers.forEach(function(u){u();});unsubscribers=[];
+    try{localStorage.clear();}catch(e){}
+    firebase.auth().signOut().then(function(){location.reload();}).catch(function(){location.reload();});
+  });
   wrap.appendChild(signOutBtn);
   return wrap;
 }
@@ -4377,7 +4383,7 @@ function buildNotificationsCard(){
 function buildSignOutButton(){
   var so=b({css:{width:"100%",padding:"13px",borderRadius:"50px",background:"transparent",border:"2px solid #F5DDD1",color:"#9B7B62",fontSize:"14px",fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginTop:"4px"}},"Sign Out");
   so.addEventListener("click",function(){
-    try{localStorage.clear();}catch(e){}
+    unsubscribers.forEach(function(u){u();});unsubscribers=[];
     try{localStorage.clear();}catch(e){}
     auth.signOut().catch(function(){});
     ST.boarded=false;ST.obStep=0;
@@ -4443,6 +4449,7 @@ function buildDeleteAccountButton(){
       var authedPhone=currentUser&&currentUser.phoneNumber;
 
       function finishLocalReset(authFullyDeleted){
+        unsubscribers.forEach(function(u){u();});unsubscribers=[];
         try{localStorage.clear();}catch(e){}
         auth.signOut().catch(function(){});
         ST.boarded=false;ST.obStep=0;
