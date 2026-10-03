@@ -5675,20 +5675,32 @@ function joinAdditionalGroupViaToken(token){
     }
     var gid=data.groupId;
     if(!gid){showTopToast("Something went wrong with that invite link.");ST.appReady=true;redraw();return;}
-    var alreadyMember=ST.groups.some(function(g){return g.id===gid;});
+    // Reconcile against the authoritative userGroups doc before deciding
+    // anything, instead of trusting whatever ST.groups holds in memory right
+    // now. Local state can be stale - most concretely, a phantom leftover
+    // group from before this account left its last group - and building on
+    // top of that stale state here is exactly what let a freshly-joined
+    // group get mixed in with a dead one, spin up a doomed listener for it,
+    // and throw a false "no longer have access" error right after a join
+    // that actually succeeded.
+    db.collection("userGroups").doc(currentUser.uid).get().then(function(ugDoc){
+    var authoritative=normalizeGroups((ugDoc.exists&&ugDoc.data()&&ugDoc.data().groups)||[]);
+    var alreadyMember=authoritative.some(function(g){return g.id===gid;});
     if(alreadyMember){
+      ST.groups=authoritative;
+      try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
       showTopToast("You're already in "+(data.groupLabel||"that group")+"!");
       ST.group=gid;ST.tab="feed";ST.appReady=true;redraw();
       return;
     }
     var newGroup={id:gid,label:data.groupLabel||"Family",icon:data.groupIcon||"\u2764\uFE0F"};
-    ST.groups.push(newGroup);
+    ST.groups=authoritative.concat([newGroup]);
     ST.feed[gid]=[];ST.chatMsgs[gid]=[];
     try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
     db.collection("userGroups").doc(currentUser.uid).set({
-      groups:firebase.firestore.FieldValue.arrayUnion(newGroup),
+      groups:ST.groups,
       updatedAt:firebase.firestore.FieldValue.serverTimestamp()
-    },{merge:true}).catch(function(e){logAppError("userGroups.set arrayUnion (join additional group)",e);});
+    },{merge:true}).catch(function(e){logAppError("userGroups.set (join additional group)",e);});
     db.collection("members").doc(currentUser.uid+"_"+gid).set({
       uid:currentUser.uid,name:ST.name,av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),
       groupId:gid,groupLabel:newGroup.label,groupIcon:newGroup.icon,isAdmin:false,
@@ -5700,6 +5712,7 @@ function joinAdditionalGroupViaToken(token){
     fetchAllFeeds();syncOn();
     showTopToast("Joined "+newGroup.label+"! \uD83C\uDF89");
     redraw();
+    }); // end userGroups.get() reconciliation
   }).catch(function(e){
     logAppError("join additional group failed (invite token lookup)",e);
     console.log("join additional group failed",e);
@@ -5771,7 +5784,16 @@ try{
     if(localStorage.getItem("ku_groups")){
       try{
         var savedGroups=JSON.parse(localStorage.getItem("ku_groups"));
-        if(savedGroups&&savedGroups.length>1)ST.groups=normalizeGroups(savedGroups);
+        // Used to require length>1 before trusting the cache, which meant an
+        // account that left its only group (a legitimately empty array) fell
+        // straight back to the hardcoded single-group default below instead
+        // of staying empty - that phantom default group then rode along into
+        // the next group they joined, got its own doomed listener, and threw
+        // a false "you no longer have access" error right after a join that
+        // actually worked. normalizeGroups() already discards anything
+        // malformed, so any valid array - including an empty one - is safe
+        // to trust here.
+        if(Array.isArray(savedGroups))ST.groups=normalizeGroups(savedGroups);
       }catch(e){}
     }
     // ku_admin defaults to true for existing users
