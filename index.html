@@ -2056,7 +2056,17 @@ function buildOnboarding(){
         ST.pendingInviteToken=null;
       }
       var uid=currentUser.uid;
-      var finalGrpId=ST.joinInvite&&ST.joinGroupId?ST.joinGroupId:"grp-"+uid;
+      // A fresh random id per group, not "grp-"+uid. That old scheme was
+      // deterministic per ACCOUNT, not per group - so anyone who ever
+      // created a group, later left it, and then created a new one would
+      // collide with their own old (still-existing - leaving never deletes
+      // the groups doc) groups/{id} document. Firestore then evaluates the
+      // write as an update (not a create, since the doc already exists),
+      // which requires current admin rights on that OLD group - rights
+      // they no longer have since they left it - so the write was silently
+      // rejected and onboarding failed with a misleading "check your
+      // connection" message.
+      var finalGrpId=ST.joinInvite&&ST.joinGroupId?ST.joinGroupId:db.collection("groups").doc().id;
       var safeAv=ST.obAvatar||"\uD83D\uDC64"; // Always use emoji for onboarding
       // Set local state
       ST.name=ST.obName;
