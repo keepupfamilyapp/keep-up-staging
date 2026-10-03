@@ -977,17 +977,47 @@ function doSync(){
   watchGroupScoped("members",myGroupIds,function(snap){
     ST.fbMembers=ST.fbMembers||{};
     var uidsSeen={};
+    // This used to only ADD a member the first time it saw their uid and
+    // silently ignore every snapshot after that - meaning a change to an
+    // already-known member's doc (promoted/demoted admin, a name/avatar
+    // refresh) never reached ST.fbMembers for the rest of the session. Now
+    // it updates the entry in place, and also drops anyone no longer present
+    // (removed, or left) instead of leaving a stale ghost member around.
+    var presentKeys={};
     snap.forEach(function(doc){
       var m=doc.data();
       var gid=m.groupId||"imm";
       if(!ST.fbMembers[gid])ST.fbMembers[gid]=[];
-      if(!ST.fbMembers[gid].find(function(x){return x.uid===m.uid;})){
-        var safeAv=(m.av&&m.av.length<=8)?m.av:"\uD83D\uDC64";
-        var safeName=(m.name&&m.name.length<40&&!/^[A-Za-z0-9_-]{20,}$/.test(m.name))?m.name:"Family member";
-        ST.fbMembers[gid].push(Object.assign({},m,{av:safeAv,name:safeName,_docId:doc.id}));
-        if(m.uid)uidsSeen[m.uid]=true;
-      }
+      var safeAv=(m.av&&m.av.length<=8)?m.av:"\uD83D\uDC64";
+      var safeName=(m.name&&m.name.length<40&&!/^[A-Za-z0-9_-]{20,}$/.test(m.name))?m.name:"Family member";
+      var entry=Object.assign({},m,{av:safeAv,name:safeName,_docId:doc.id});
+      var idx=ST.fbMembers[gid].findIndex(function(x){return x.uid===m.uid;});
+      if(idx>=0)ST.fbMembers[gid][idx]=entry;else ST.fbMembers[gid].push(entry);
+      if(m.uid)uidsSeen[m.uid]=true;
+      presentKeys[m.uid+"_"+gid]=true;
     });
+    myGroupIds.forEach(function(gid){
+      if(!ST.fbMembers[gid])return;
+      ST.fbMembers[gid]=ST.fbMembers[gid].filter(function(x){return presentKeys[x.uid+"_"+gid];});
+    });
+    // Admin status used to be a one-time snapshot taken at sign-in and
+    // cached in localStorage, never re-checked again - a handoff or removal
+    // done by someone else wouldn't show up until the next full sign-in.
+    // Recompute it live right here instead, so it reflects reality within a
+    // second or two of the actual change, no refresh needed at all.
+    if(currentUser){
+      var myEntries=[];
+      Object.keys(ST.fbMembers).forEach(function(gid){
+        var me=ST.fbMembers[gid].find(function(x){return x.uid===currentUser.uid;});
+        if(me)myEntries.push(me);
+      });
+      var isAdminAnywhereNow=myEntries.some(function(x){return x.isAdmin===true;});
+      var wasAdmin=localStorage.getItem("ku_admin")==="1";
+      if(isAdminAnywhereNow!==wasAdmin){
+        try{localStorage.setItem("ku_admin",isAdminAnywhereNow?"1":"0");}catch(e){}
+        redraw();
+      }
+    }
     if(ST.tab==="profile")redraw();
     // Merge in real profile data (name/avatar/etc now live in profiles/{uid},
     // separate from group membership, so editing your profile once updates
