@@ -265,7 +265,20 @@ function uploadToCloudflareStream(file,onProgress){
     });
 }
 
-var VAPID_KEY="BJOij4wvBLe4ZgNbMuhHSVarzr9k65tSbnbF5oeSjsvOg_rTJN-ffZmCsLfz1iX_UGq5aPmTyWwRRb-fdAHJ7O4";
+// A VAPID key is tied to ONE specific Firebase project's Cloud Messaging
+// config (its "Web Push certificates" key pair) - it can't be reused across
+// projects any more than an API key can. Staging and prod are separate
+// Firebase projects (see FIREBASE_CONFIG_STAGING/PROD above), so they need
+// their own VAPID keys too. Using prod's key while initialized against
+// staging's project is exactly what throws "messaging/token-subscribe-failed:
+// ...missing required authentication credential" - the key doesn't belong
+// to the project the app is actually talking to.
+// PLACEHOLDER - get the real staging key from the keep-up-staging Firebase
+// project: Project Settings > Cloud Messaging > Web Push certificates
+// (generate a key pair there if none exists yet), then paste it in below.
+var VAPID_KEY_STAGING="BFb604l1JHAkBLdS1Pfu-KoRLR_Nmrn1Zu6K18P8_9ggdtbFsp7Ei4llTgAFmAB4ZOggaq8DEhGs5nSmJx384_I";
+var VAPID_KEY_PROD="BJOij4wvBLe4ZgNbMuhHSVarzr9k65tSbnbF5oeSjsvOg_rTJN-ffZmCsLfz1iX_UGq5aPmTyWwRRb-fdAHJ7O4";
+var VAPID_KEY=IS_STAGING?VAPID_KEY_STAGING:VAPID_KEY_PROD;
 
 // Register service worker and request notification permission
 function initNotifications(){
@@ -969,8 +982,15 @@ function doSync(){
     unsubscribers.push(dmListUnsub);
   }
 
-  // Listen for notifications triggered by other users
+  // Listen for notifications triggered by other users. Scoped to our own
+  // groups (myGroupIds, already computed above) - this used to query the
+  // whole notifications collection with no groupId filter at all. The
+  // security rule is scoped per-document (isMember(resource.data.groupId)),
+  // and Firestore can't prove an unscoped query is safe for every possible
+  // matching document, so it denied the entire query outright with
+  // permission-denied rather than filtering anything out.
   var notifUnsub=db.collection("notifications")
+    .where("groupId","in",myGroupIds)
     .orderBy("sentAt","desc").limit(1)
     .onSnapshot(function(snap){
       snap.docChanges().forEach(function(change){
@@ -1268,7 +1288,18 @@ function setGroupIcon(container,g){
 // sane to show, regardless of what the source data actually contained.
 function normalizeGroups(arr){
   return (arr||[]).filter(function(g){return g&&g.id;}).map(function(g){
-    return {id:g.id,label:g.label||"Family",icon:g.icon||"❤️",photo:g.photo};
+    var out={id:g.id,label:g.label||"Family",icon:g.icon||"❤️"};
+    // Only include photo when there actually is one. `photo:g.photo` used to
+    // run unconditionally, which put an explicit `photo: undefined` key on
+    // every group with no custom photo (the normal case - most groups just
+    // use an emoji icon). That's harmless for local state, but Firestore's
+    // SDK rejects ANY undefined field value outright on a write - so the
+    // moment this normalized list got written back (joining a group via
+    // invite link, accepting a phone invite), the whole batch failed with
+    // "Unsupported field value: undefined", surfacing as a generic
+    // connection-error toast with no hint of the real cause.
+    if(g.photo)out.photo=g.photo;
+    return out;
   });
 }
 
