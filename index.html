@@ -4306,6 +4306,7 @@ function buildInviteCard(){
             status.style.color="#4A7C59";
           });
         }).catch(function(e){
+          console.log("inviteExistingMemberByPhone failed:",e&&e.code,e&&e.message,e);
           logAppError("inviteExistingMemberByPhone failed",e);
           btn.textContent="Send";btn.disabled=false;
           status.textContent="Something went wrong — check your connection and try again.";
@@ -4724,11 +4725,13 @@ function acceptPendingGroupInvite(){
       showTopToast("Joined "+newGroup.label+"! 🎉");
       redraw();
     }).catch(function(e){
+      console.log("acceptPendingGroupInvite batch failed:",e&&e.code,e&&e.message,e);
       logAppError("acceptPendingGroupInvite batch failed",e);
       showTopToast("Couldn't join that group — check your connection and try again.");
       redraw();
     });
   }).catch(function(e){
+    console.log("acceptPendingGroupInvite reconciliation failed:",e&&e.code,e&&e.message,e);
     logAppError("acceptPendingGroupInvite reconciliation failed",e);
     showTopToast("Couldn't check your groups — check your connection and try again.");
     redraw();
@@ -4740,6 +4743,7 @@ function declinePendingGroupInvite(){
   db.collection("pendingInvites").doc(currentUser.phoneNumber).delete().then(function(){
     ST.myPendingInvite=null;redraw();
   }).catch(function(e){
+    console.log("declinePendingGroupInvite failed:",e&&e.code,e&&e.message,e);
     logAppError("declinePendingGroupInvite failed",e);
     showTopToast("Couldn't dismiss that invite — check your connection and try again.");
   });
