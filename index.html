@@ -600,6 +600,18 @@ function handleGroupListenerErr(err,gid){
     ST.groups=ST.groups.filter(function(x){return x.id!==gid;});
     try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
     if(wasCurrent&&ST.groups.length){ST.group=ST.groups[0].id;}
+    // Scrub this group from the authoritative userGroups doc too - otherwise
+    // it's still listed there, so the very next sign-in reads it again,
+    // tries to sync it, hits the same permission-denied, and this whole
+    // thing repeats forever instead of actually healing.
+    var uidForCleanup=currentUser.uid;
+    db.collection("userGroups").doc(uidForCleanup).get().then(function(udoc){
+      var curGroups=(udoc.exists&&udoc.data().groups)||[];
+      var cleaned=curGroups.filter(function(x){return x&&x.id!==gid;});
+      if(cleaned.length!==curGroups.length){
+        return db.collection("userGroups").doc(uidForCleanup).set({groups:cleaned,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+      }
+    }).catch(function(e){logAppError("userGroups cleanup after permission-denied",e);});
     if(typeof showTopToast==="function"){
       showTopToast(removedGroup?("You no longer have access to "+removedGroup.label):"You no longer have access to a group.");
     }
@@ -2153,6 +2165,7 @@ function buildNoGroupsScreen(){
   signOutBtn.style.cssText="margin-top:14px;background:none;border:none;color:#9B7B62;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;text-decoration:underline;";
   signOutBtn.addEventListener("click",function(){
     unsubscribers.forEach(function(u){u();});unsubscribers=[];
+    if(window.recaptchaVerifier){try{window.recaptchaVerifier.clear();}catch(e){}window.recaptchaVerifier=null;}
     try{localStorage.clear();}catch(e){}
     firebase.auth().signOut().then(function(){location.reload();}).catch(function(){location.reload();});
   });
@@ -4067,19 +4080,32 @@ function performLeaveGroup(gid,successorUid){
   var g=ST.groups.find(function(x){return x.id===gid;});
   var groupLabel=(g&&g.label)||"the group";
   var memberDocId=uid+"_"+gid;
-  var tasks=[db.collection("members").doc(memberDocId).delete()];
-  if(successorUid){
-    var sMems=(ST.fbMembers&&ST.fbMembers[gid])||[];
-    var sEntry=sMems.find(function(m){return m.uid===successorUid;});
-    var sDocId=(sEntry&&sEntry._docId)||(successorUid+"_"+gid);
-    tasks.push(db.collection("members").doc(sDocId).set({isAdmin:true},{merge:true}));
-  }
-  Promise.all(tasks).then(function(){
-    return db.collection("userGroups").doc(uid).get();
-  }).then(function(udoc){
+  // Everything below commits as ONE atomic batch instead of several
+  // independent sequential writes. Two reasons:
+  // 1. The isGroupAdmin() rule for promoting a successor needs OUR OWN
+  //    member doc to still exist with isAdmin:true. A batch's security
+  //    rules are evaluated against the database as it stood right before
+  //    the commit, for every write in that commit - so the promotion sees
+  //    us as still-admin even though this same commit deletes our doc.
+  // 2. All-or-nothing commit means there's no window where our member doc
+  //    is gone but userGroups still lists the group (or vice versa) because
+  //    one write succeeded and a later, separate write failed/got
+  //    interrupted. That split-brain is exactly what caused real accounts
+  //    to land on "No family group found" while still permission-denied
+  //    on every collection for a group userGroups said they belonged to.
+  db.collection("userGroups").doc(uid).get().then(function(udoc){
     var curGroups=(udoc.exists&&udoc.data().groups)||[];
     var newGroups=curGroups.filter(function(x){return x&&x.id!==gid;});
-    return db.collection("userGroups").doc(uid).set({groups:newGroups,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+    var batch=db.batch();
+    if(successorUid){
+      var sMems=(ST.fbMembers&&ST.fbMembers[gid])||[];
+      var sEntry=sMems.find(function(m){return m.uid===successorUid;});
+      var sDocId=(sEntry&&sEntry._docId)||(successorUid+"_"+gid);
+      batch.set(db.collection("members").doc(sDocId),{isAdmin:true},{merge:true});
+    }
+    batch.delete(db.collection("members").doc(memberDocId));
+    batch.set(db.collection("userGroups").doc(uid),{groups:newGroups,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+    return batch.commit();
   }).then(function(){
     ST.groups=ST.groups.filter(function(x){return x.id!==gid;});
     delete ST.feed[gid];delete ST.chatMsgs[gid];delete ST.mems[gid];
@@ -4384,6 +4410,7 @@ function buildSignOutButton(){
   var so=b({css:{width:"100%",padding:"13px",borderRadius:"50px",background:"transparent",border:"2px solid #F5DDD1",color:"#9B7B62",fontSize:"14px",fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginTop:"4px"}},"Sign Out");
   so.addEventListener("click",function(){
     unsubscribers.forEach(function(u){u();});unsubscribers=[];
+    if(window.recaptchaVerifier){try{window.recaptchaVerifier.clear();}catch(e){}window.recaptchaVerifier=null;}
     try{localStorage.clear();}catch(e){}
     auth.signOut().catch(function(){});
     ST.boarded=false;ST.obStep=0;
@@ -4450,6 +4477,7 @@ function buildDeleteAccountButton(){
 
       function finishLocalReset(authFullyDeleted){
         unsubscribers.forEach(function(u){u();});unsubscribers=[];
+        if(window.recaptchaVerifier){try{window.recaptchaVerifier.clear();}catch(e){}window.recaptchaVerifier=null;}
         try{localStorage.clear();}catch(e){}
         auth.signOut().catch(function(){});
         ST.boarded=false;ST.obStep=0;
