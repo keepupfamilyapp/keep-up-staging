@@ -636,6 +636,22 @@ function handleGenericListenerErr(err,label){
 function syncOn(){
   if(!currentUser)return;
   unsubscribers.forEach(function(u){u();});unsubscribers=[];
+  // Watch for a phone-targeted invite addressed to this account. Registered
+  // here (not just once at sign-in) so it survives syncOn()'s own listener
+  // reset above, and runs even for an account with zero groups right now -
+  // deliberately, since the whole point is to rescue someone who's signed
+  // in but currently has no group (and therefore no admin of their own who
+  // could hand them a link). Security rules only let an account read the
+  // pendingInvites doc matching its OWN verified phone number, so this is
+  // safe without any server-side lookup.
+  if(currentUser.phoneNumber){
+    unsubscribers.push(db.collection("pendingInvites").doc(currentUser.phoneNumber).onSnapshot(function(snap){
+      ST.myPendingInvite=snap.exists?Object.assign({_id:snap.id},snap.data()):null;
+      redraw();
+    },function(err){
+      console.log("pendingInvites listener error:",err&&err.code,err);
+    }));
+  }
   var dot=document.getElementById("sync-dot");if(dot)dot.style.display="block";
   // Load notification mute preferences
   db.collection("fcmTokens").doc(currentUser.uid).get().then(function(doc){
@@ -1177,7 +1193,7 @@ var ST={
   feedRendered:{},allReactions:{},upPhotos:[],mutedGroups:[],muteComments:false,muteDailyReminder:false,
   boarded:false,obStep:0,obName:"",obAvatar:"\uD83D\uDC69",obPhoto:null,
   obGrpName:"",obGrpEmoji:"\u2764\uFE0F",obGrpPhoto:null,joinInvite:false,inviteError:null,fbMembers:{},
-  editingGroup:null,editingBirthdays:false,creatingGroup:false,showGroupSwitcher:false,navExpanded:false,showTutorial:false,tutorialStep:0,replyTo:null,profileWallpaper:null,sessionStart:Date.now(),memoryDay:null,memoryPosts:null,appReady:false,leaveGroupId:null,
+  editingGroup:null,editingBirthdays:false,creatingGroup:false,showGroupSwitcher:false,navExpanded:false,showTutorial:false,tutorialStep:0,replyTo:null,profileWallpaper:null,sessionStart:Date.now(),memoryDay:null,memoryPosts:null,appReady:false,leaveGroupId:null,myPendingInvite:null,invitePhoneBusy:false,
   tab:"feed",group:"imm",name:"Sean",avatar:"\uD83D\uDC68",feedLoading:false,
   openChat:null,
   chatMsgs:{imm:[]},
@@ -1369,6 +1385,15 @@ function buildDeleteButton(css,itemId,opts){
 
 function isAdmin(){
   try{return localStorage.getItem("ku_admin")==="1";}catch(e){return false;}
+}
+
+function normalizePhoneInput(raw){
+  raw=(raw||"").trim().replace(/[\s\-().]/g,"");
+  if(raw&&!raw.startsWith("+")){
+    // No country code given - assume US/Canada if it's a plain 10-digit number
+    raw=(raw.length===10)?"+1"+raw:"+"+raw;
+  }
+  return raw;
 }
 
 function showFullScreen(url){
@@ -2158,6 +2183,12 @@ function buildOnboarding(){
 
 function buildNoGroupsScreen(){
   var wrap=d({id:"app",css:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",padding:"32px 24px",height:"100vh",boxSizing:"border-box",background:"#FFF8F0"}});
+  if(ST.myPendingInvite){
+    wrap.appendChild(d({css:{fontSize:"13px",fontWeight:800,color:"#9B7B62",textTransform:"uppercase",letterSpacing:".5px",marginBottom:"12px"}},"You have a pending invite"));
+    var pic=buildPendingInviteCard();pic.style.maxWidth="320px";pic.style.width="100%";
+    wrap.appendChild(pic);
+    wrap.appendChild(d({css:{fontSize:"13px",color:"#9B7B62",margin:"22px 0 4px"}},"\u2014 or \u2014"));
+  }
   wrap.appendChild(d({css:{fontSize:"56px",marginBottom:"16px"}},"\uD83C\uDFE1"));
   wrap.appendChild(d({css:{fontFamily:"Lora,serif",fontSize:"22px",fontWeight:600,color:"#3D2314",marginBottom:"10px"}},"No family group found"));
   wrap.appendChild(d({css:{fontSize:"14px",color:"#9B7B62",lineHeight:1.6,marginBottom:"10px",maxWidth:"320px"}},"You're signed in, but you're not currently part of a family group. This can happen if a group was removed or your access changed."));
@@ -4237,6 +4268,51 @@ function buildInviteCard(){
       });
     })(g,copyBtn,gt);
     row.appendChild(copyBtn);invBody.appendChild(row);
+    // Invite an existing Keep Up user directly by phone number - shows up
+    // as a card in their own app (Profile tab, or the "no group" recovery
+    // screen) instead of a link someone has to copy and send some other
+    // way. Only works for numbers that already have an account, since
+    // that's the whole point - for anyone else, Copy Link above still
+    // covers it.
+    var phoneRow=d({css:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"4px"}});
+    var phoneIn=el("input",{type:"tel",placeholder:"Invite by phone number",css:{flex:1,padding:"9px 12px",borderRadius:"50px",border:"1.5px solid #F5DDD1",background:"#FAF6F0",fontSize:"13px",color:"#3D2314",outline:"none",fontFamily:"inherit"}});
+    var phoneBtn=b({css:{padding:"7px 13px",borderRadius:"50px",background:"transparent",border:"1.5px solid "+gt.a,color:gt.a,fontSize:"12px",fontWeight:700,cursor:"pointer",fontFamily:"inherit",flexShrink:0}},"Send");
+    phoneRow.appendChild(phoneIn);phoneRow.appendChild(phoneBtn);
+    invBody.appendChild(phoneRow);
+    var phoneStatus=d({css:{fontSize:"11px",lineHeight:1.5,marginBottom:"12px",minHeight:"1px"}});
+    invBody.appendChild(phoneStatus);
+    (function(grpObj,btn,input,status){
+      btn.addEventListener("click",function(){
+        if(!currentUser){status.textContent="Please wait — still signing you in.";status.style.color="#C0392B";return;}
+        var phone=normalizePhoneInput(input.value);
+        if(!phone||phone.length<8){status.textContent="Enter a valid phone number.";status.style.color="#C0392B";return;}
+        btn.textContent="...";btn.disabled=true;status.textContent="";
+        functions.httpsCallable("checkPhoneHasAccount")({phone:phone}).then(function(result){
+          var exists=!!(result.data&&result.data.exists);
+          if(!exists){
+            btn.textContent="Send";btn.disabled=false;
+            status.textContent="This number doesn't have a Keep Up account yet — please use Copy Link above to invite them instead.";
+            status.style.color="#C4714A";
+            return;
+          }
+          return db.collection("pendingInvites").doc(phone).set({
+            groupId:grpObj.id,groupLabel:grpObj.label,groupIcon:grpObj.icon,
+            invitedBy:currentUser.uid,invitedByName:ST.name||"A family member",
+            createdAt:firebase.firestore.FieldValue.serverTimestamp()
+          }).then(function(){
+            btn.textContent="Send";btn.disabled=false;
+            input.value="";
+            status.textContent="Invite sent! It'll show up in their app.";
+            status.style.color="#4A7C59";
+          });
+        }).catch(function(e){
+          logAppError("inviteExistingMemberByPhone failed",e);
+          btn.textContent="Send";btn.disabled=false;
+          status.textContent="Something went wrong — check your connection and try again.";
+          status.style.color="#C0392B";
+        });
+      });
+    })(g,phoneBtn,phoneIn,phoneStatus);
   });
   inv.appendChild(invBody);
   return inv;
@@ -4612,10 +4688,92 @@ function buildDeleteAccountButton(){
 // The Profile tab, dispatching to one builder per card instead of a single
 // ~470-line function building all 13 cards inline. Order matches exactly
 // what was there before.
+function acceptPendingGroupInvite(){
+  if(!currentUser||!ST.myPendingInvite)return;
+  var inv=ST.myPendingInvite;
+  var gid=inv.groupId;
+  if(!gid){showTopToast("Something's wrong with that invite.");redraw();return;}
+  db.collection("userGroups").doc(currentUser.uid).get().then(function(ugDoc){
+    var authoritative=normalizeGroups((ugDoc.exists&&ugDoc.data()&&ugDoc.data().groups)||[]);
+    if(authoritative.some(function(g){return g.id===gid;})){
+      // Already a member somehow - just clear the stale invite
+      db.collection("pendingInvites").doc(currentUser.phoneNumber).delete().catch(function(e){logAppError("pendingInvites.delete (already member)",e);});
+      ST.group=gid;ST.tab="feed";ST.myPendingInvite=null;redraw();
+      return;
+    }
+    var newGroup={id:gid,label:inv.groupLabel||"Family",icon:inv.groupIcon||"❤️"};
+    var updatedGroups=authoritative.concat([newGroup]);
+    // Same atomic-batch pattern as the invite-link join flow: commit
+    // membership + userGroups + clearing the invite as one unit, and don't
+    // touch local state or start listeners until it's actually confirmed.
+    var batch=db.batch();
+    batch.set(db.collection("userGroups").doc(currentUser.uid),{groups:updatedGroups,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+    batch.set(db.collection("members").doc(currentUser.uid+"_"+gid),{
+      uid:currentUser.uid,name:ST.name,av:ST.avatar&&ST.avatar.startsWith("data:")?"👤":(ST.avatar||"👤"),
+      groupId:gid,groupLabel:newGroup.label,groupIcon:newGroup.icon,isAdmin:false,
+      joinedAt:firebase.firestore.FieldValue.serverTimestamp()
+    });
+    batch.delete(db.collection("pendingInvites").doc(currentUser.phoneNumber));
+    batch.commit().then(function(){
+      ST.groups=updatedGroups;
+      ST.feed[gid]=[];ST.chatMsgs[gid]=[];
+      try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
+      db.collection("fcmTokens").doc(currentUser.uid).set({groupIds:updatedGroups.map(function(gr){return gr.id;})},{merge:true}).catch(function(e){logAppError("fcmTokens.set (accept pending invite)",e);});
+      ST.group=gid;ST.tab="feed";ST.appReady=true;ST.myPendingInvite=null;
+      fetchAllFeeds();syncOn();
+      showTopToast("Joined "+newGroup.label+"! 🎉");
+      redraw();
+    }).catch(function(e){
+      logAppError("acceptPendingGroupInvite batch failed",e);
+      showTopToast("Couldn't join that group — check your connection and try again.");
+      redraw();
+    });
+  }).catch(function(e){
+    logAppError("acceptPendingGroupInvite reconciliation failed",e);
+    showTopToast("Couldn't check your groups — check your connection and try again.");
+    redraw();
+  });
+}
+
+function declinePendingGroupInvite(){
+  if(!currentUser||!ST.myPendingInvite)return;
+  db.collection("pendingInvites").doc(currentUser.phoneNumber).delete().then(function(){
+    ST.myPendingInvite=null;redraw();
+  }).catch(function(e){
+    logAppError("declinePendingGroupInvite failed",e);
+    showTopToast("Couldn't dismiss that invite — check your connection and try again.");
+  });
+}
+
+function buildPendingInviteCard(){
+  var inv=ST.myPendingInvite;
+  if(!inv)return null;
+  var card=d({css:{background:"#FFF4E8",border:"2px solid #E8956D",borderRadius:"18px",padding:"16px",marginBottom:"12px",textAlign:"center"}});
+  card.appendChild(d({css:{fontSize:"32px",marginBottom:"8px"}},inv.groupIcon||"❤️"));
+  card.appendChild(d({css:{fontSize:"13px",fontWeight:700,color:"#9B7B62",marginBottom:"2px"}},inv.invitedByName?(inv.invitedByName+" invited you to"):"You've been invited to"));
+  card.appendChild(d({css:{fontFamily:"Lora,serif",fontSize:"19px",fontWeight:600,color:"#3D2314",marginBottom:"14px"}},inv.groupLabel||"a family group"));
+  var btnRow=d({css:{display:"flex",gap:"10px"}});
+  var acceptBtn=b({css:{flex:1,padding:"11px",borderRadius:"50px",background:"#C4714A",border:"none",color:"white",fontSize:"13px",fontWeight:700,cursor:"pointer",fontFamily:"inherit"}},"Accept");
+  acceptBtn.addEventListener("click",function(){
+    acceptBtn.textContent="Joining...";acceptBtn.disabled=true;
+    acceptPendingGroupInvite();
+  });
+  var declineBtn=b({css:{flex:1,padding:"11px",borderRadius:"50px",background:"transparent",border:"1.5px solid #E8956D",color:"#9B7B62",fontSize:"13px",fontWeight:700,cursor:"pointer",fontFamily:"inherit"}},"Decline");
+  declineBtn.addEventListener("click",function(){
+    if(!confirm("Decline this invite to "+(inv.groupLabel||"this group")+"?"))return;
+    declineBtn.textContent="...";declineBtn.disabled=true;
+    declinePendingGroupInvite();
+  });
+  btnRow.appendChild(acceptBtn);btnRow.appendChild(declineBtn);
+  card.appendChild(btnRow);
+  return card;
+}
+
 function buildProfile(t){
   var wrap=d({cls:"scr",css:{padding:"0 0 80px"}});
   wrap.appendChild(buildProfileBanner(t));
   var body=d({css:{padding:"16px 16px 0",marginTop:"-22px"}});
+  if(ST.myPendingInvite)body.appendChild(buildPendingInviteCard());
   body.appendChild(buildGroupsCard());
   body.appendChild(buildStatsRow(t));
   body.appendChild(buildInviteCard());
@@ -5778,24 +5936,42 @@ function joinAdditionalGroupViaToken(token){
       return;
     }
     var newGroup={id:gid,label:data.groupLabel||"Family",icon:data.groupIcon||"\u2764\uFE0F"};
-    ST.groups=authoritative.concat([newGroup]);
-    ST.feed[gid]=[];ST.chatMsgs[gid]=[];
-    try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
-    db.collection("userGroups").doc(currentUser.uid).set({
-      groups:ST.groups,
+    var updatedGroups=authoritative.concat([newGroup]);
+    // userGroups and members commit as ONE atomic batch, and - critically -
+    // we wait for that commit to actually finish before touching local
+    // state, starting listeners, or marking anything "joined". The old code
+    // fired both writes in parallel and then immediately called syncOn(),
+    // which could start the group's listeners before the members doc had
+    // actually committed server-side. If that write landed a beat late, the
+    // listener's first read saw "not a member yet", failed with
+    // permission-denied, and the self-healing cleanup on that error handler
+    // (added for a different bug) would then strip the group right back out
+    // of userGroups - undoing the join that had, in fact, just succeeded.
+    var batch=db.batch();
+    batch.set(db.collection("userGroups").doc(currentUser.uid),{
+      groups:updatedGroups,
       updatedAt:firebase.firestore.FieldValue.serverTimestamp()
-    },{merge:true}).catch(function(e){logAppError("userGroups.set (join additional group)",e);});
-    db.collection("members").doc(currentUser.uid+"_"+gid).set({
+    },{merge:true});
+    batch.set(db.collection("members").doc(currentUser.uid+"_"+gid),{
       uid:currentUser.uid,name:ST.name,av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),
       groupId:gid,groupLabel:newGroup.label,groupIcon:newGroup.icon,isAdmin:false,
       joinedAt:firebase.firestore.FieldValue.serverTimestamp()
-    }).catch(function(e){logAppError("members.set (join additional group)",e);});
-    db.collection("inviteTokens").doc(token).update({used:true,usedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(e){logAppError("inviteTokens.update (mark used - join additional group)",e);});
-    db.collection("fcmTokens").doc(currentUser.uid).set({groupIds:ST.groups.map(function(gr){return gr.id;})},{merge:true}).catch(function(e){logAppError("fcmTokens.set (join additional group)",e);});
-    ST.group=gid;ST.tab="feed";ST.appReady=true;
-    fetchAllFeeds();syncOn();
-    showTopToast("Joined "+newGroup.label+"! \uD83C\uDF89");
-    redraw();
+    });
+    batch.commit().then(function(){
+      ST.groups=updatedGroups;
+      ST.feed[gid]=[];ST.chatMsgs[gid]=[];
+      try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
+      db.collection("inviteTokens").doc(token).update({used:true,usedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(e){logAppError("inviteTokens.update (mark used - join additional group)",e);});
+      db.collection("fcmTokens").doc(currentUser.uid).set({groupIds:updatedGroups.map(function(gr){return gr.id;})},{merge:true}).catch(function(e){logAppError("fcmTokens.set (join additional group)",e);});
+      ST.group=gid;ST.tab="feed";ST.appReady=true;
+      fetchAllFeeds();syncOn();
+      showTopToast("Joined "+newGroup.label+"! \uD83C\uDF89");
+      redraw();
+    }).catch(function(e){
+      logAppError("join additional group batch failed",e);
+      showTopToast("Couldn't join that group \u2014 check your connection and try the link again.");
+      ST.appReady=true;redraw();
+    });
     }); // end userGroups.get() reconciliation
   }).catch(function(e){
     logAppError("join additional group failed (invite token lookup)",e);
