@@ -2157,7 +2157,16 @@ function buildNoGroupsScreen(){
     // through phone verification once, and clearing it would force a fresh
     // invite link (if they get one after this) down the slow full-onboarding
     // path instead of the fast rejoin path that already handles this case.
-    ST.boarded=false;ST.obStep=0;ST.joinInvite=false;ST.obGrpName=null;
+    // Also deliberately jumping straight to step 3 ("create a group"), not
+    // step 0 - step 0 is the very first "Get Started" screen that leads into
+    // phone verification, and this account is already signed in. Sending it
+    // through step 0 again walked a verified user back through the phone
+    // step for no reason. Carry over the name/avatar already on file so
+    // step 4 (which writes ST.obName/ST.obAvatar to Firestore) has real
+    // values instead of blanks.
+    ST.boarded=false;ST.obStep=3;ST.joinInvite=false;
+    ST.obGrpName="";ST.obGrpEmoji="❤️";ST.obGrpPhoto=null;
+    ST.obName=ST.name||"";ST.obAvatar=ST.avatar||"👤";
     redraw();
   }));
   var signOutBtn=document.createElement("button");
