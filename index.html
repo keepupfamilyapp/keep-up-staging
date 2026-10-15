@@ -276,7 +276,7 @@ function uploadToCloudflareStream(file,onProgress){
 // PLACEHOLDER - get the real staging key from the keep-up-staging Firebase
 // project: Project Settings > Cloud Messaging > Web Push certificates
 // (generate a key pair there if none exists yet), then paste it in below.
-var VAPID_KEY_STAGING="BFb604l1JHAkBLdS1Pfu-KoRLR_Nmrn1Zu6K18P8_9ggdtbFsp7Ei4llTgAFmAB4ZOggaq8DEhGs5nSmJx384_I";
+var VAPID_KEY_STAGING="REPLACE_WITH_STAGING_PROJECT_VAPID_KEY";
 var VAPID_KEY_PROD="BJOij4wvBLe4ZgNbMuhHSVarzr9k65tSbnbF5oeSjsvOg_rTJN-ffZmCsLfz1iX_UGq5aPmTyWwRRb-fdAHJ7O4";
 var VAPID_KEY=IS_STAGING?VAPID_KEY_STAGING:VAPID_KEY_PROD;
 
@@ -3568,18 +3568,22 @@ function sendChatPhoto(gid,file,t){
   storage.ref("chat-photos/"+uid+"/"+Date.now()+"."+ext).put(file)
     .then(function(snap){return snap.ref.getDownloadURL();})
     .then(function(url){
-      var msg={av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),name:ST.name||"You",text:"",imgUrl:url,time:"Just now",you:true};
+      var msg={av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),name:ST.name||"You",text:"",imgUrl:url,time:"Just now",you:true,senderUid:currentUser.uid};
       // Remove temp
       if(dm){dm.msgs=dm.msgs.filter(function(x){return x.id!==tempId;});}
       else{ST.chatMsgs[gid]=ST.chatMsgs[gid].filter(function(x){return x.id!==tempId;});}
       if(dm){
-        postToDm(gid,Object.assign({},msg,{you:false})).catch(function(){
-          dm.msgs.push(Object.assign({},msg,{id:Date.now()}));dm.last="📷 Photo";dm.lt=Date.now();
+        postToDm(gid,Object.assign({},msg,{you:false})).catch(function(e){
+          logAppError("postToDm (chat photo)",e);
+          dm.msgs.push(Object.assign({},msg,{id:tempId}));dm.last="📷 Photo";dm.lt=Date.now();
+          redraw();
         });
       } else {
-        postToChat(gid,Object.assign({},msg,{you:false})).catch(function(){
+        postToChat(gid,Object.assign({},msg,{you:false})).catch(function(e){
+          logAppError("postToChat (chat photo)",e);
           if(!ST.chatMsgs[gid])ST.chatMsgs[gid]=[];
-          ST.chatMsgs[gid].push(Object.assign({},msg,{id:Date.now()}));
+          ST.chatMsgs[gid].push(Object.assign({},msg,{id:tempId}));
+          redraw();
         });
       }
       // Redraw to remove temp bubble, then scroll
@@ -3618,19 +3622,23 @@ function sendChatVideo(gid,file,t){
   });
   uploadTask.then(function(snap){return snap.ref.getDownloadURL();})
     .then(function(url){
-      var msg={av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),name:ST.name||"You",text:"",videoUrl:url,time:"Just now",you:true};
+      var msg={av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),name:ST.name||"You",text:"",videoUrl:url,time:"Just now",you:true,senderUid:currentUser.uid};
       if(dm){dm.msgs=dm.msgs.filter(function(x){return x.id!==tempId;});}
       else{ST.chatMsgs[gid]=ST.chatMsgs[gid].filter(function(x){return x.id!==tempId;});}
       if(dm){
         postToDm(gid,Object.assign({},msg,{you:false})).then(function(){
           db.collection("userDms").doc(gid).update({last:"\uD83C\uDFA5 Video",lt:"Just now",updatedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(e){logAppError("userDms.update (video message DM preview)",e);});
-        }).catch(function(){
-          dm.msgs.push(Object.assign({},msg,{id:Date.now()}));dm.last="\uD83C\uDFA5 Video";dm.lt="Just now";
+        }).catch(function(e){
+          logAppError("postToDm (chat video)",e);
+          dm.msgs.push(Object.assign({},msg,{id:tempId}));dm.last="\uD83C\uDFA5 Video";dm.lt="Just now";
+          redraw();
         });
       } else {
-        postToChat(gid,Object.assign({},msg,{you:false})).catch(function(){
+        postToChat(gid,Object.assign({},msg,{you:false})).catch(function(e){
+          logAppError("postToChat (chat video)",e);
           if(!ST.chatMsgs[gid])ST.chatMsgs[gid]=[];
-          ST.chatMsgs[gid].push(Object.assign({},msg,{id:Date.now()}));
+          ST.chatMsgs[gid].push(Object.assign({},msg,{id:tempId}));
+          redraw();
         });
       }
       var chatList2=document.getElementById("chat-msg-list");
