@@ -1069,30 +1069,16 @@ function doSync(){
       }
     }
     if(ST.tab==="profile")redraw();
-    // Merge in real profile data (name/avatar/etc now live in profiles/{uid},
-    // separate from group membership, so editing your profile once updates
-    // it everywhere instead of only your first group). Batched by uid
-    // instead of listening to the whole profiles collection, to avoid
-    // reintroducing an unscoped collection-wide read.
-    var allUids=Object.keys(uidsSeen);
-    function fetchProfileBatch(uidBatch){
-      if(!uidBatch.length)return;
-      db.collection("profiles").where(firebase.firestore.FieldPath.documentId(),"in",uidBatch).get()
-        .then(function(pSnap){
-          pSnap.forEach(function(pDoc){
-            var p=pDoc.data();
-            Object.keys(ST.fbMembers).forEach(function(gid){
-              var entry=ST.fbMembers[gid].find(function(x){return x.uid===pDoc.id;});
-              if(entry){
-                if(p.name)entry.name=p.name;
-                if(p.av)entry.av=(p.av.length<=8||p.av.startsWith("http")||p.av.startsWith("data:"))?p.av:entry.av;
-              }
-            });
-          });
-          if(ST.tab==="profile")redraw();
-        }).catch(function(e){logAppError("profiles.where(in) (merge profile data into members)",e);});
-    }
-    for(var bi=0;bi<allUids.length;bi+=10){fetchProfileBatch(allUids.slice(bi,bi+10));}
+    // Live name/avatar sync for other members used to happen here via a
+    // client-side batch read of profiles/{uid} for every member's uid - but
+    // that required profiles to be readable by any signed-in user, which was
+    // a real cross-tenant privacy leak (anyone could read anyone else's
+    // profile, same-group or not). profiles/{uid} is now owner-read-only,
+    // and the sync is instead handled server-side by the
+    // syncProfileToMembers Cloud Function, which copies name/av into every
+    // members/{uid}_{groupId} doc whenever someone edits their own profile -
+    // so the member list still updates live, without any client ever
+    // reading another user's profile document.
   });
 
   // Listen to comments
