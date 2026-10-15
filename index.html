@@ -2828,6 +2828,9 @@ function buildVideoWrap(item){
     cfThumb.appendChild(cfPlay);
     vidWrap.appendChild(cfThumb);
     function loadCfIframe(){
+      // Clear any pending auto-retry from a previous call so taps and
+      // timer-driven retries never stack up multiple reloads at once.
+      if(vidWrap._cfAutoRetryTimer){clearTimeout(vidWrap._cfAutoRetryTimer);vidWrap._cfAutoRetryTimer=null;}
       var oldFrame=vidWrap.querySelector("iframe");
       if(oldFrame)oldFrame.remove();
       var oldRetry=document.getElementById("cf-retry-"+item.id);
@@ -2840,17 +2843,21 @@ function buildVideoWrap(item){
       iframe.setAttribute("allow","accelerometer;gyroscope;autoplay;encrypted-media;picture-in-picture;");
       iframe.setAttribute("allowfullscreen","true");
       vidWrap.appendChild(iframe);
-      // A brand new video may still be encoding on Cloudflare's side for
-      // a short window after upload - if that's likely the case here,
-      // offer an easy in-app retry instead of making the user restart
-      // the whole app (we can't see inside the cross-origin iframe to
-      // detect the error directly, so just offer this proactively).
+      // A brand new video may still be encoding on Cloudflare's side for a
+      // few minutes after upload (longer for bigger/longer clips) - we can't
+      // see inside the cross-origin iframe to detect that directly, so
+      // instead of a single short-lived manual retry chance, keep retrying
+      // automatically in the background for up to 5 minutes after posting,
+      // with a status pill visible the whole time (also tappable for an
+      // immediate retry) instead of one that silently disappears.
       var ageMs=item.createdAt&&item.createdAt.toMillis?(Date.now()-item.createdAt.toMillis()):99999999;
-      if(ageMs<180000){
-        var retryPill=b({id:"cf-retry-"+item.id,css:{position:"absolute",bottom:"12px",left:"50%",transform:"translateX(-50%)",background:"rgba(0,0,0,.6)",color:"white",border:"none",borderRadius:"50px",padding:"8px 16px",fontSize:"12px",fontWeight:700,cursor:"pointer",fontFamily:"inherit",backdropFilter:"blur(4px)",zIndex:3}},"Video still processing? Tap to retry");
+      if(ageMs<300000){
+        var retryPill=b({id:"cf-retry-"+item.id,css:{position:"absolute",bottom:"12px",left:"50%",transform:"translateX(-50%)",background:"rgba(0,0,0,.6)",color:"white",border:"none",borderRadius:"50px",padding:"8px 16px",fontSize:"12px",fontWeight:700,cursor:"pointer",fontFamily:"inherit",backdropFilter:"blur(4px)",zIndex:3}},"Video still processing - tap to retry now");
         retryPill.addEventListener("click",function(e){e.stopPropagation();loadCfIframe();});
         vidWrap.appendChild(retryPill);
-        setTimeout(function(){if(retryPill&&retryPill.parentNode)retryPill.remove();},15000);
+        vidWrap._cfAutoRetryTimer=setTimeout(function(){
+          if(vidWrap.isConnected)loadCfIframe();
+        },8000);
       }
     }
     cfThumb.addEventListener("click",function(){
