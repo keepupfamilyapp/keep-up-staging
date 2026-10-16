@@ -782,6 +782,13 @@ function doSync(){
               redraw();
               setTimeout(function(){var _cl=document.getElementById("chat-msg-list");if(_cl)_cl.scrollTop=_cl.scrollHeight;},80);
             }
+          } else if(!(document.activeElement&&(document.activeElement.tagName==="INPUT"||document.activeElement.tagName==="TEXTAREA"))){
+            // hasUnread() for the nav badge is recomputed fresh from
+            // ST.chatMsgs on every redraw, but without one the badge never
+            // actually repaints while the user is on another tab when a
+            // group chat message arrives live - same issue as the DM
+            // listener below, fixed the same way.
+            debouncedRedraw();
           }
       },function(err){handleGroupListenerErr(err,gid);});
     unsubscribers.push(unsub);
@@ -869,6 +876,7 @@ function doSync(){
       .onSnapshot(function(snap){
         var dm=ST.dms.find(function(x){return x.id===dmId;});
         if(!dm)return;
+        var gotNewUnread=false;
         snap.docChanges().forEach(function(change){
           var data=Object.assign({},change.doc.data(),{id:change.doc.id});
           if(change.type==="added"){
@@ -896,6 +904,7 @@ function doSync(){
               if(!data.you&&msgTs>ST.sessionStart&&!dm.countedIds[data.id]){
                 dm.countedIds[data.id]=true;
                 dm.unread=(dm.unread||0)+1;
+                gotNewUnread=true;
                 var myUid4=currentUser?currentUser.uid:localStorage.getItem("ku_uid");
                 // Save to both Firestore and localStorage
                 localStorage.setItem("ku_unread_"+dmId,String(dm.unread));
@@ -906,12 +915,23 @@ function doSync(){
             }
           }
         });
+        // Don't steal focus/cursor from whatever input the user is actively
+        // typing in, on any tab - otherwise identical to the redraw below.
+        var typingSomewhere=document.activeElement&&(document.activeElement.tagName==="INPUT"||document.activeElement.tagName==="TEXTAREA");
         if(ST.tab==="chat"){
-          if(document.activeElement&&document.activeElement.tagName==="INPUT"){
+          if(typingSomewhere){
             setTimeout(function(){var _cl=document.getElementById("chat-msg-list");if(_cl)_cl.scrollTop=_cl.scrollHeight;},80);
           } else {
             debouncedRedraw();
           }
+        } else if(gotNewUnread&&!typingSomewhere){
+          // Not on the chat tab, so there's no message list to update here -
+          // but the unread badge on the nav (home button + Chat pill) is
+          // built as part of the top-level app render, so without this the
+          // badge state updates invisibly and never actually appears on
+          // screen until something else forces a redraw (e.g. a manual
+          // refresh), even though the message genuinely arrived live.
+          debouncedRedraw();
         }
       },function(err){handleGenericListenerErr(err,"dm messages");});
     unsubscribers.push(unsub);
