@@ -937,15 +937,24 @@ function doSync(){
           if(change.type==="added"){
             // New DM appeared (either we created it or someone DMed us)
             if(!ST.dms.find(function(x){return x.id===dmId;})){
-              // Start unread at 0 - will increment via watchDm as new messages arrive
-            // Don't load from Firestore to avoid stale counts restoring
+              // Start from the max of local and server-known unread counts.
+              // unreadBy.<uid> is correctly incremented on every new message
+              // and cleared to 0 on every "mark as read" path in this file
+              // (chat-tab visit, list tap, chat opened), so it's a reliable
+              // source of truth now - skipping it (as this used to) meant a
+              // DM sent while you weren't already in the app with this DM's
+              // listener live would never show as unread, since localStorage
+              // alone has no way to know about it.
             var dmLt=data.lt;
             if(dmLt&&dmLt.toMillis)dmLt=dmLt.toMillis();
             // Use updatedAt if available as it's more reliable than lt
             var dmUpdated=data.updatedAt&&data.updatedAt.toMillis?data.updatedAt.toMillis():null;
             var finalLt=dmUpdated||dmLt||"";
+            var myUidInit=currentUser?currentUser.uid:localStorage.getItem("ku_uid");
+            var serverUnread=(data.unreadBy&&myUidInit&&typeof data.unreadBy[myUidInit]==="number")?data.unreadBy[myUidInit]:0;
             var savedUnread=parseInt(localStorage.getItem("ku_unread_"+dmId)||"0");
-            ST.dms.push({id:dmId,members:otherProfiles,last:data.last||"",lt:finalLt,msgs:[],unread:savedUnread});
+            var initUnread=Math.max(savedUnread,serverUnread);
+            ST.dms.push({id:dmId,members:otherProfiles,last:data.last||"",lt:finalLt,msgs:[],unread:initUnread});
             }
             watchDm(dmId);
           } else if(change.type==="modified"){
