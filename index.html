@@ -3198,7 +3198,7 @@ function buildChatView(t,grp){
   var list=d({id:"chat-msg-list",cls:"scr",css:{padding:"12px 13px 8px",display:"flex",flexDirection:"column",gap:"8px",background:t.bg,WebkitUserSelect:"none",userSelect:"none",WebkitTouchCallout:"none"}});
   if(!msgs.length){
     var em=d({css:{textAlign:"center",padding:"40px 20px",color:"#9B7B62"}});
-    var eic=d({css:{fontSize:"40px",marginBottom:"8px"}});eic.textContent=chatIcon;em.appendChild(eic);
+    var eic=d({css:{width:"64px",height:"64px",borderRadius:"50%",margin:"0 auto 8px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"40px",overflow:"hidden",background:t.ap}});renderAvatarGlyph(eic,chatIcon,10,"👤");em.appendChild(eic);
     em.appendChild(d({css:{fontSize:"14px",fontWeight:700,color:"#6B4C35",marginBottom:"4px"}},"Start the conversation!"));
     em.appendChild(d({css:{fontSize:"12px"}},"Say hello to "+chatName));list.appendChild(em);
   }
