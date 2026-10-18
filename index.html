@@ -143,7 +143,7 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-10-18T06:30:00Z";
+var APP_VERSION="2026-10-18T07:00:00Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
@@ -5388,6 +5388,15 @@ function buildCreateGroup(){
         groups:firebase.firestore.FieldValue.arrayUnion(newGroup)
       },{merge:true}).catch(function(e){logAppError("userGroups.set arrayUnion (create group)",e);});
       db.collection("fcmTokens").doc(currentUser.uid).set({groupIds:ST.groups.map(function(gr){return gr.id;})},{merge:true}).catch(function(e){logAppError("fcmTokens.set (create group)",e);});
+      // Restart the group-scoped listeners (members/comments/reactions/rsvps/
+      // events) so they pick up the new group id - syncOn()'s where("in",...)
+      // queries are built from a plain JS array snapshotted when they were
+      // started, so they never see a group added to ST.groups afterward on
+      // their own. Without this, the new group silently had no live admin
+      // status, no live member list, no live comments/reactions/rsvps/events
+      // until the next full page reload (joinAdditionalGroupViaToken and
+      // acceptPendingGroupInvite both already do this for the same reason).
+      fetchAllFeeds();syncOn();
       redraw();
     }).catch(function(e){
       logAppError("group create failed",e);
