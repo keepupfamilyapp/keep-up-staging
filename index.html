@@ -143,7 +143,7 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-09-15T00:00:00Z";
+var APP_VERSION="2026-10-18T05:30:00Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
@@ -5354,34 +5354,47 @@ function buildCreateGroup(){
     if(!currentUser){alert("Please wait — still signing you in.");return;}
     var newGid="g"+Date.now();
     var newGroup={id:newGid,label:ni.value.trim(),icon:selEmoji[0]};
-    // Add to local groups
-    ST.groups.push(newGroup);
-    ST.feed[newGid]=[];
-    ST.chatMsgs[newGid]=[];
-    ST.mems[newGid]=[{av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),name:ST.name,role:"Admin",you:true,uid:currentUser.uid}];
-    // Save group to Firebase
+    ST.creatingGroup=false;
+    saveBtn.textContent="Creating...";saveBtn.disabled=true;
+    // Save group to Firebase first, and only touch local state / userGroups /
+    // fcmTokens once the group doc AND the admin member doc have actually
+    // committed. Previously the local push + userGroups arrayUnion fired
+    // unconditionally regardless of whether the Firestore writes below ever
+    // succeeded, so a failed/flaky groups.set() left a ghost group: present
+    // in userGroups and localStorage (and shown as "joined" in the UI) with
+    // no backing groups doc and no admin members doc ever created, and no
+    // error shown to the user.
     db.collection("groups").doc(newGid).set({
       id:newGid,label:newGroup.label,icon:newGroup.icon,
       adminUid:currentUser.uid,adminName:ST.name,
       createdAt:firebase.firestore.FieldValue.serverTimestamp()
     }).then(function(){
       // Add self as member of new group
-      db.collection("members").doc(currentUser.uid+"_"+newGid).set({
+      return db.collection("members").doc(currentUser.uid+"_"+newGid).set({
         uid:currentUser.uid,name:ST.name,av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),
         groupId:newGid,groupLabel:newGroup.label,isAdmin:true,
         joinedAt:firebase.firestore.FieldValue.serverTimestamp()
       });
-    }).catch(function(e){logAppError("group create failed",e);console.log("group create failed",e);});
-    ST.group=newGid;ST.creatingGroup=false;
-    // Save updated groups to localStorage
-    try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
-    if(currentUser){
+    }).then(function(){
+      // Only now that both docs are confirmed written: reflect the new group
+      // in local/in-memory state and sync userGroups + fcmTokens.
+      ST.groups.push(newGroup);
+      ST.feed[newGid]=[];
+      ST.chatMsgs[newGid]=[];
+      ST.mems[newGid]=[{av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),name:ST.name,role:"Admin",you:true,uid:currentUser.uid}];
+      ST.group=newGid;
+      try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
       db.collection("userGroups").doc(currentUser.uid).set({
         groups:firebase.firestore.FieldValue.arrayUnion(newGroup)
       },{merge:true}).catch(function(e){logAppError("userGroups.set arrayUnion (create group)",e);});
       db.collection("fcmTokens").doc(currentUser.uid).set({groupIds:ST.groups.map(function(gr){return gr.id;})},{merge:true}).catch(function(e){logAppError("fcmTokens.set (create group)",e);});
-    }
-    redraw();
+      redraw();
+    }).catch(function(e){
+      logAppError("group create failed",e);
+      console.log("group create failed",e);
+      saveBtn.textContent="Create Group";saveBtn.disabled=false;
+      showTopToast("Couldn't create that group — check your connection and try again.");
+    });
   });
   sh.appendChild(saveBtn);
   ov.appendChild(sh);return ov;
