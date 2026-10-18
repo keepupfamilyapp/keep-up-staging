@@ -143,7 +143,7 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-10-18T05:30:00Z";
+var APP_VERSION="2026-10-18T06:30:00Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
@@ -4129,7 +4129,7 @@ function buildGroupsCard(){
     var memCount=Math.max(mems.length,fbMems.length);
     info.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"1px"}},memCount+" member"+(memCount!==1?"s":"")));
     row.appendChild(info);
-    if(isAdmin()){
+    if(getGroupAdminStatus(g.id)){
       var editGrpBtn=b({css:{background:gt.ap,color:gt.ad,fontSize:"11px",fontWeight:700,padding:"3px 10px",borderRadius:"50px",border:"none",cursor:"pointer",fontFamily:"inherit"}},"Edit");
       (function(grpObj){editGrpBtn.addEventListener("click",function(){ST.editingGroup=grpObj.id;redraw();});})(g);
       row.appendChild(editGrpBtn);
@@ -4148,7 +4148,7 @@ function buildGroupsCard(){
       renderAvatarGlyph(mavic,m.av,10,"👤");
       mrow.appendChild(mavic);
       mrow.appendChild(d({css:{flex:1,fontSize:"13px",fontWeight:700,color:"#3D2314"}},m.name+(isYou?" (you)":"")));
-      if(!isYou&&isAdmin()){
+      if(!isYou&&getGroupAdminStatus(g.id)){
         var removeBtn=b({css:{padding:"5px 11px",borderRadius:"50px",background:"transparent",border:"1.5px solid #F5DDD1",fontSize:"11px",fontWeight:700,color:"#9B7B62",cursor:"pointer",fontFamily:"inherit"}},"Remove");
         (function(member){
           removeBtn.addEventListener("click",function(){
@@ -4301,13 +4301,13 @@ function buildInviteCard(){
   inv.appendChild(d({css:{padding:"13px 15px 9px",fontSize:"12px",fontWeight:800,color:"#9B7B62",textTransform:"uppercase",letterSpacing:".5px",borderBottom:"1px solid #F5DDD1"}},"Invite Family"));
   var invBody=d({css:{padding:"12px 15px"}});
   ST.groups.forEach(function(g){
-    if(!isAdmin())return; // Only admins can invite
+    if(!getGroupAdminStatus(g.id))return; // Only admins can invite
     var gt=th(g.id);
     var row=d({css:{display:"flex",alignItems:"center",gap:"10px",marginBottom:"10px"}});
     var ic=d({css:{width:"34px",height:"34px",borderRadius:"50%",background:gt.ap,border:"1.5px solid "+gt.al,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"17px",flexShrink:0,overflow:"hidden"}});setGroupIcon(ic,g);row.appendChild(ic);
     var info=d({css:{flex:1,minWidth:0}});
     info.appendChild(d({css:{fontSize:"13px",fontWeight:700,color:"#3D2314"}},g.label));
-    info.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"1px"}},isAdmin()?"Tap to copy invite link (expires in 2 days)":"Share this link to invite family"));
+    info.appendChild(d({css:{fontSize:"11px",color:"#9B7B62",marginTop:"1px"}},getGroupAdminStatus(g.id)?"Tap to copy invite link (expires in 2 days)":"Share this link to invite family"));
     row.appendChild(info);
     var copyBtn=b({css:{padding:"7px 13px",borderRadius:"50px",background:gt.a,border:"none",color:"white",fontSize:"12px",fontWeight:700,cursor:"pointer",fontFamily:"inherit",flexShrink:0}},"Copy Link");
     (function(grpObj,btn,gtc){
