@@ -2121,11 +2121,13 @@ function buildOnboarding(){
     body.appendChild(d({css:{fontSize:"14px",color:"#6B4C35",lineHeight:1.7,marginBottom:"28px"}},doneMsg));
     body.appendChild(makeBtn("Take me to Keep Up",function(){
       if(!currentUser){alert("Please wait a moment while we sign you in.");return;}
-      // Mark invite token as used now that onboarding is completing
-      if(ST.pendingInviteToken){
-        db.collection("inviteTokens").doc(ST.pendingInviteToken).update({used:true,usedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(e){logAppError("inviteTokens.update (mark used - existing account invite)",e);});
-        ST.pendingInviteToken=null;
-      }
+      // Capture the invite token now (if joining via one) so the members
+      // write below can prove it to the security rules, and so it only gets
+      // marked used AFTER that write actually succeeds - marking it used
+      // first (the old order) would make the members write fail its own
+      // invite-token check, since by then the token would already read
+      // used:true.
+      var inviteTokenForJoin=ST.joinInvite?ST.pendingInviteToken:null;
       var uid=currentUser.uid;
       // A fresh random id per group, not "grp-"+uid. That old scheme was
       // deterministic per ACCOUNT, not per group - so anyone who ever
@@ -2190,14 +2192,19 @@ function buildOnboarding(){
           db.collection("profiles").doc(uid).set({
             name:ST.obName,av:safeAv
           },{merge:true}),
-          db.collection("members").doc(uid+"_"+finalGrpId).set({
+          db.collection("members").doc(uid+"_"+finalGrpId).set(Object.assign({
             uid:uid,name:ST.obName,av:safeAv,
             groupId:finalGrpId,groupLabel:ST.obGrpName,groupIcon:ST.obGrpEmoji,
             isAdmin:!ST.joinInvite,
             joinedAt:firebase.firestore.FieldValue.serverTimestamp()
-          })
+          },inviteTokenForJoin?{viaInviteToken:inviteTokenForJoin}:{}))
         ]);
       }).then(function(){
+        // Now that the join actually succeeded, mark the invite token used.
+        if(inviteTokenForJoin){
+          db.collection("inviteTokens").doc(inviteTokenForJoin).update({used:true,usedAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(e){logAppError("inviteTokens.update (mark used - existing account invite)",e);});
+        }
+        ST.pendingInviteToken=null;
         // Start app
         syncOn();
         fetchAllFeeds();
@@ -6020,7 +6027,8 @@ function joinAdditionalGroupViaToken(token){
     batch.set(db.collection("members").doc(currentUser.uid+"_"+gid),{
       uid:currentUser.uid,name:ST.name,av:ST.avatar&&ST.avatar.startsWith("data:")?"\uD83D\uDC64":(ST.avatar||"\uD83D\uDC64"),
       groupId:gid,groupLabel:newGroup.label,groupIcon:newGroup.icon,isAdmin:false,
-      joinedAt:firebase.firestore.FieldValue.serverTimestamp()
+      joinedAt:firebase.firestore.FieldValue.serverTimestamp(),
+      viaInviteToken:token
     });
     batch.commit().then(function(){
       ST.groups=updatedGroups;
