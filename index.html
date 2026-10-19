@@ -143,12 +143,12 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-10-18T08:15:00Z-debug";
+var APP_VERSION="2026-10-18T20:48:14Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
     .then(function(html){
-      var m=html.match(/var APP_VERSION="([^"]+)"/);
+      var m=html.match(/var APP_VERSION="2026-10-18T20:48:14Z"]+)"/);
       if(m&&m[1]&&m[1]!==APP_VERSION)showUpdateBanner();
     }).catch(function(){/* offline, or the request was blocked - just skip this check, try again next interval */});
 }
@@ -1799,6 +1799,7 @@ function buildOnboarding(){
   function backBtn(){var bb=document.createElement("button");bb.textContent="Back";bb.style.cssText="position:absolute;top:14px;left:14px;background:#F5DDD1;border:none;border-radius:50px;padding:7px 14px;font-size:13px;font-weight:700;color:#6B4226;cursor:pointer;font-family:inherit;z-index:10;";bb.onclick=function(){ST.obStep--;redraw();};return bb;}
 
   if(step===0){
+    console.log("[INVITE DEBUG] buildOnboarding step 0 render:",{joinInvite:ST.joinInvite,obGrpName:ST.obGrpName,inviteError:ST.inviteError,lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken});
     var scr=d({cls:"ob-screen"});
     var hero=d({cls:"ob-hero"});var icon=d({css:{fontSize:"72px",animation:"float 3s ease-in-out infinite"}});icon.textContent="\uD83C\uDFE1";hero.appendChild(icon);scr.appendChild(hero);
     var body=d({cls:"ob-body",css:{alignItems:"center",justifyContent:"center",textAlign:"center"}});
@@ -2530,19 +2531,21 @@ function buildFeed(t,grp){
   });
 
   var feedItems=ST.feed[ST.group]||[];
-  // If pending invite token exists, skip splash entirely
-  var hasPendingInvite=localStorage.getItem("ku_pending_token")||_pendingToken;
-  if(hasPendingInvite&&!ST.boarded){ST.appReady=true;ST.joinInvite=true;}
-  if(ST.joinInvite&&!ST.boarded)ST.appReady=true;
-  var _hasPending=!!localStorage.getItem("ku_pending_token");
-  if(_hasPending){
-    ST.appReady=true;
-    ST.boarded=false;
-    ST.joinInvite=true;
-    ST.groups=[]; // Clear old groups so they dont show
-    ST.group="";
+  // NOTE: buildFeed() only ever runs once ST.boarded is already true -
+  // buildApp() returns buildOnboarding() before ever reaching this function
+  // otherwise. So a pending invite token showing up HERE means an already-
+  // boarded user clicked ANOTHER invite link; that's joinAdditionalGroupViaToken's
+  // job (silent join + toast), driven from the onAuthStateChanged/hashchange
+  // dispatch. This used to also force ST.boarded=false, ST.joinInvite=true and
+  // wipe ST.groups right here, which fought that flow, and - worse - ran on
+  // EVERY redraw as long as the stale token sat in localStorage, so it kept
+  // stomping ST.joinInvite back to true the instant processInviteToken had
+  // deliberately set it false to surface ST.inviteError (the invalid/used/
+  // expired-link banner). Logging only now; no state mutation here.
+  if(localStorage.getItem("ku_pending_token")||_pendingToken){
+    console.log("[INVITE DEBUG] buildFeed: pending token present while boarded - leaving to joinAdditionalGroupViaToken",{boarded:ST.boarded,joinInvite:ST.joinInvite,inviteError:ST.inviteError});
   }
-  if(!ST.appReady||(!currentUser&&!ST.joinInvite&&!_hasPending)||ST.feedLoading){
+  if(!ST.appReady||(!currentUser&&!ST.joinInvite)||ST.feedLoading){
     var loading=d({css:{position:"fixed",inset:"0",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:t.bg,zIndex:50}});
     var splashTitle=d({css:{fontFamily:"Lora,serif",fontSize:"42px",fontWeight:600,color:t.a,letterSpacing:"-1px",animation:"float 2s ease-in-out infinite"}});
     splashTitle.innerHTML="keep <em>up</em>";
@@ -6099,6 +6102,7 @@ function processInviteToken(token){
     console.log("[INVITE DEBUG] inviteTokens doc fetched, exists:",doc.exists,"data:",doc.exists?doc.data():null);
     if(!doc.exists){
       localStorage.removeItem("ku_pending_token");
+      _pendingToken=null;
       ST.inviteError="This invite link doesn't look right. It may have been mistyped or removed. You can still create your own group below, or ask whoever invited you for a fresh link.";
       // Force back to obStep 0 - that's the ONLY screen that ever renders
       // ST.inviteError (see buildOnboarding, step===0). By the time this
@@ -6107,19 +6111,24 @@ function processInviteToken(token){
       // sets and is never seen - the user just continues into normal
       // onboarding with zero indication anything was wrong with their link.
       ST.obStep=0;ST.joinInvite=false;
+      console.log("[INVITE DEBUG] processInviteToken: token not found, cleared. post-clear state:",{lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError});
       redraw();return;
     }
     var data=doc.data();
     if(data.used){
       localStorage.removeItem("ku_pending_token");
+      _pendingToken=null;
       ST.inviteError="This invite link has already been used. If you're trying to join "+(data.groupLabel||"a family group")+", ask an admin in that group to send you a fresh invite link. In the meantime, you can create your own group below.";
       ST.obStep=0;ST.joinInvite=false;
+      console.log("[INVITE DEBUG] processInviteToken: token already used, cleared. post-clear state:",{lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError});
       redraw();return;
     }
     if(isInviteTokenExpired(data)){
       localStorage.removeItem("ku_pending_token");
+      _pendingToken=null;
       ST.inviteError="This invite link has expired. Ask an admin in "+(data.groupLabel||"that group")+" to send you a fresh invite link. In the meantime, you can create your own group below.";
       ST.obStep=0;ST.joinInvite=false;
+      console.log("[INVITE DEBUG] processInviteToken: token expired, cleared. post-clear state:",{lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError});
       redraw();return;
     }
     // Dont mark used until onboarding completes
@@ -6134,8 +6143,14 @@ function processInviteToken(token){
   }).catch(function(e){
     logAppError("processInviteToken failed (invite token lookup)",e);
     console.log("token error:",e);
+    // Deliberately NOT removing ku_pending_token here - a lookup failure is
+    // usually transient (offline/connection blip), not a dead token, so the
+    // retry on next load should still see it. _pendingToken (the in-memory
+    // copy) is cleared regardless, same as every other terminal branch above.
+    _pendingToken=null;
     ST.inviteError="We couldn't check that invite link right now — this is usually a connection issue. You can try again, or create your own group below.";
     ST.obStep=0;ST.joinInvite=false;
+    console.log("[INVITE DEBUG] processInviteToken: lookup failed. post-clear state:",{lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError});
     redraw();
   });
 }
