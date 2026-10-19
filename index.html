@@ -143,12 +143,12 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-10-18T21:02:28Z";
+var APP_VERSION="2026-10-18T21:49:41Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
     .then(function(html){
-      var m=html.match(/var APP_VERSION="2026-10-18T21:02:28Z"]+)"/);
+      var m=html.match(/var APP_VERSION="([^"]+)"/);
       if(m&&m[1]&&m[1]!==APP_VERSION)showUpdateBanner();
     }).catch(function(){/* offline, or the request was blocked - just skip this check, try again next interval */});
 }
@@ -1799,7 +1799,7 @@ function buildOnboarding(){
   function backBtn(){var bb=document.createElement("button");bb.textContent="Back";bb.style.cssText="position:absolute;top:14px;left:14px;background:#F5DDD1;border:none;border-radius:50px;padding:7px 14px;font-size:13px;font-weight:700;color:#6B4226;cursor:pointer;font-family:inherit;z-index:10;";bb.onclick=function(){ST.obStep--;redraw();};return bb;}
 
   if(step===0){
-    console.log("[INVITE DEBUG] buildOnboarding step 0 render:",{joinInvite:ST.joinInvite,obGrpName:ST.obGrpName,inviteError:ST.inviteError,lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken});
+    console.log("[INVITE DEBUG] buildOnboarding step 0 render:"+JSON.stringify({joinInvite:ST.joinInvite,obGrpName:ST.obGrpName,inviteError:ST.inviteError,lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken}));
     var scr=d({cls:"ob-screen"});
     var hero=d({cls:"ob-hero"});var icon=d({css:{fontSize:"72px",animation:"float 3s ease-in-out infinite"}});icon.textContent="\uD83C\uDFE1";hero.appendChild(icon);scr.appendChild(hero);
     var body=d({cls:"ob-body",css:{alignItems:"center",justifyContent:"center",textAlign:"center"}});
@@ -2543,7 +2543,7 @@ function buildFeed(t,grp){
   // deliberately set it false to surface ST.inviteError (the invalid/used/
   // expired-link banner). Logging only now; no state mutation here.
   if(localStorage.getItem("ku_pending_token")||_pendingToken){
-    console.log("[INVITE DEBUG] buildFeed: pending token present while boarded - leaving to joinAdditionalGroupViaToken",{boarded:ST.boarded,joinInvite:ST.joinInvite,inviteError:ST.inviteError});
+    console.log("[INVITE DEBUG] buildFeed: pending token present while boarded - leaving to joinAdditionalGroupViaToken"+JSON.stringify({boarded:ST.boarded,joinInvite:ST.joinInvite,inviteError:ST.inviteError}));
   }
   if(!ST.appReady||(!currentUser&&!ST.joinInvite)||ST.feedLoading){
     var loading=d({css:{position:"fixed",inset:"0",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:t.bg,zIndex:50}});
@@ -6111,7 +6111,7 @@ function processInviteToken(token){
       // sets and is never seen - the user just continues into normal
       // onboarding with zero indication anything was wrong with their link.
       ST.obStep=0;ST.joinInvite=false;
-      console.log("[INVITE DEBUG] processInviteToken: token not found, cleared. post-clear state:",{lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError});
+      console.log("[INVITE DEBUG] processInviteToken: token not found, cleared. post-clear state:"+JSON.stringify({lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError}));
       redraw();return;
     }
     var data=doc.data();
@@ -6120,7 +6120,7 @@ function processInviteToken(token){
       _pendingToken=null;
       ST.inviteError="This invite link has already been used. If you're trying to join "+(data.groupLabel||"a family group")+", ask an admin in that group to send you a fresh invite link. In the meantime, you can create your own group below.";
       ST.obStep=0;ST.joinInvite=false;
-      console.log("[INVITE DEBUG] processInviteToken: token already used, cleared. post-clear state:",{lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError});
+      console.log("[INVITE DEBUG] processInviteToken: token already used, cleared. post-clear state:"+JSON.stringify({lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError}));
       redraw();return;
     }
     if(isInviteTokenExpired(data)){
@@ -6128,7 +6128,7 @@ function processInviteToken(token){
       _pendingToken=null;
       ST.inviteError="This invite link has expired. Ask an admin in "+(data.groupLabel||"that group")+" to send you a fresh invite link. In the meantime, you can create your own group below.";
       ST.obStep=0;ST.joinInvite=false;
-      console.log("[INVITE DEBUG] processInviteToken: token expired, cleared. post-clear state:",{lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError});
+      console.log("[INVITE DEBUG] processInviteToken: token expired, cleared. post-clear state:"+JSON.stringify({lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError}));
       redraw();return;
     }
     // Dont mark used until onboarding completes
@@ -6150,7 +6150,7 @@ function processInviteToken(token){
     _pendingToken=null;
     ST.inviteError="We couldn't check that invite link right now — this is usually a connection issue. You can try again, or create your own group below.";
     ST.obStep=0;ST.joinInvite=false;
-    console.log("[INVITE DEBUG] processInviteToken: lookup failed. post-clear state:",{lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError});
+    console.log("[INVITE DEBUG] processInviteToken: lookup failed. post-clear state:"+JSON.stringify({lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,obStep:ST.obStep,inviteError:ST.inviteError}));
     redraw();
   });
 }
