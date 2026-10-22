@@ -143,7 +143,7 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-10-18T21:49:41Z";
+var APP_VERSION="2026-10-21T20:53:11Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
