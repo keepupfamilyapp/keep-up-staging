@@ -143,7 +143,7 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-10-21T20:53:11Z";
+var APP_VERSION="2026-10-21T21:20:09Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
@@ -1992,13 +1992,34 @@ function buildOnboarding(){
                 fetchAllFeeds();syncOn();redraw();
               });
             } else {
-              // Genuinely new account for this phone number - continue onboarding
-              ST.obStep=1;redraw();
+              // Genuinely new account for this phone number - continue onboarding.
+              // EXCEPT: this profiles.get() is its own independent Firestore
+              // round-trip, racing processInviteToken()'s inviteTokens lookup -
+              // both get kicked off right after sign-in, from two separate
+              // places, with no coordination between them. Whichever resolves
+              // LAST wins the redraw. When an invite token is in play and this
+              // one wins, it blows obStep to 1 right over whatever
+              // processInviteToken just decided (obStep 0 + the invalid/used/
+              // expired-link error banner), hiding it completely - the user
+              // just lands on "What's your name?" with zero indication
+              // anything was wrong with their invite link. A VALID invite
+              // (ST.joinInvite true, no error) is unaffected by this guard -
+              // that case still advances normally, same as always.
+              if((localStorage.getItem("ku_pending_token")||_pendingToken||ST.inviteError)&&!ST.joinInvite){
+                console.log("[INVITE DEBUG] phone-verify new-account handler: deferring obStep=1, invite still pending or failed. state:"+JSON.stringify({lsToken:localStorage.getItem("ku_pending_token"),_pendingToken:_pendingToken,joinInvite:ST.joinInvite,inviteError:ST.inviteError}));
+              } else {
+                ST.obStep=1;redraw();
+              }
             }
           }).catch(function(e){
             logAppError("existing-account phone check failed (fell back to new onboarding)",e);
-            // Couldn't check - fall back to normal onboarding rather than blocking them
-            ST.obStep=1;redraw();
+            // Couldn't check - fall back to normal onboarding rather than blocking them.
+            // Same race guard as above.
+            if((localStorage.getItem("ku_pending_token")||_pendingToken||ST.inviteError)&&!ST.joinInvite){
+              console.log("[INVITE DEBUG] phone-verify fallback handler: deferring obStep=1, invite still pending or failed.");
+            } else {
+              ST.obStep=1;redraw();
+            }
           });
         })
         .catch(function(e){
@@ -6139,6 +6160,15 @@ function processInviteToken(token){
     ST.joinGroupId=data.groupId||null;
     ST.boarded=false;
     ST.appReady=true; // Show onboarding not splash
+    // Reaching here means auth already succeeded (processInviteToken only runs
+    // post-sign-in), so it's always safe to move past the phone-verify step.
+    // This also races the phone-confirm handler's own profiles.get() check
+    // (see its "genuinely new account" branch) - whichever of the two
+    // resolves last decides obStep. If THAT one resolved first, it saw no
+    // joinInvite yet and deferred without ever setting obStep; forcing it
+    // forward here too means a valid invite always converges on obStep 1
+    // instead of occasionally getting stuck on the phone-code screen.
+    if(ST.obStep<1)ST.obStep=1;
     redraw();
   }).catch(function(e){
     logAppError("processInviteToken failed (invite token lookup)",e);
