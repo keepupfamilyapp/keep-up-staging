@@ -143,7 +143,7 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-10-21T21:35:39Z";
+var APP_VERSION="2026-10-21T21:54:24Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
@@ -1936,26 +1936,21 @@ function buildOnboarding(){
           // someone who lost local storage/their bookmark and re-verifies
           // should be logged straight back in, not sent through onboarding again.
           db.collection("profiles").doc(result.user.uid).get().then(function(pdoc){
-            if(pdoc.exists&&ST.joinInvite&&ST.pendingInviteToken){
-              // Existing account tapped a fresh invite link (Firebase Phone
-              // Auth returns the same account for the same number) - add the
-              // invited group to their existing account instead of silently
-              // restoring their old state and ignoring the invite entirely.
-              var p0=pdoc.data();
-              if(p0.name){ST.name=p0.name;localStorage.setItem("ku_name",p0.name);}
-              if(p0.av){
-                var isValidAv0=p0.av.startsWith("http")||p0.av.startsWith("data:")||p0.av.length<=8;
-                ST.avatar=isValidAv0?p0.av:"\uD83D\uDC64";
-                localStorage.setItem("ku_av",ST.avatar);
-              }
-              ST.boarded=true;localStorage.setItem("ku_ob","1");
-              db.collection("userGroups").doc(result.user.uid).get().then(function(gdoc0){
-                if(gdoc0.exists&&gdoc0.data().groups&&gdoc0.data().groups.length>0){
-                  ST.groups=normalizeGroups(gdoc0.data().groups);
-                  try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
-                }
-                joinAdditionalGroupViaToken(ST.pendingInviteToken);
-              }).catch(function(){joinAdditionalGroupViaToken(ST.pendingInviteToken);});
+            if(localStorage.getItem("ku_pending_token")||_pendingToken||ST.pendingInviteToken||ST.joinInvite||ST.inviteError){
+              // An invite token is (or was) in play for this sign-in.
+              // processInviteToken() - triggered independently via
+              // onAuthStateChanged, from the exact same sign-in event as this
+              // .then() - is now the single source of truth for deciding
+              // new-vs-returning account AND the token's validity; it does
+              // its own profiles.get() to make that call. Deciding it here
+              // too used to race that read: whichever of the two Firestore
+              // calls came back first silently won, which could ignore a
+              // VALID invite entirely (never actually joining the group,
+              // no error shown) or swallow a DEAD one straight into the
+              // user's restored feed with zero error shown either way. One
+              // source of truth now - this handler steps aside whenever a
+              // token's involved and lets that function finish the job.
+              console.log("[INVITE DEBUG] phone-verify profile check: deferring to processInviteToken, invite in play");
               return;
             }
             if(pdoc.exists){
@@ -6133,6 +6128,81 @@ function joinAdditionalGroupViaToken(token){
 }
 function processInviteToken(token){
   console.log("[INVITE DEBUG] processInviteToken called with token:",token);
+  // First: is this actually a registered user who lost local storage and had
+  // to re-verify their phone, rather than someone going through onboarding
+  // for the first time? This used to be decided by a completely separate
+  // Firestore read inside the phone-verification success handler, racing
+  // this very function - whichever came back first silently won, which
+  // could leave a VALID invite never actually joined (ST.joinInvite set but
+  // nothing ever calls the code that joins the group) or a DEAD one
+  // swallowed straight into the user's restored feed with zero error shown.
+  // This function is now the single place deciding both "new vs returning
+  // account" and the token's validity, so there's only one outcome.
+  db.collection("profiles").doc(currentUser.uid).get().then(function(pdoc){
+    if(pdoc.exists){
+      _restoreAccountThenJoinInvite(pdoc.data(),token);
+      return;
+    }
+    _lookUpAndApplyInviteToken(token);
+  }).catch(function(e){
+    logAppError("processInviteToken profile check failed (fell back to treating as new account)",e);
+    _lookUpAndApplyInviteToken(token);
+  });
+}
+function _restoreAccountThenJoinInvite(p,token){
+  // Registered user, lost local storage - restore their basic account first
+  // (name/avatar/groups/admin status) so they land on their real feed
+  // instead of onboarding, then hand the actual invite-token validity check
+  // and joining off to joinAdditionalGroupViaToken() - the same,
+  // already-correct path used when an already-boarded user clicks a NEW
+  // invite link while the app is running (toast on dead/used/expired,
+  // atomic join + already-member handling on a valid one). No need to
+  // duplicate any of that logic here.
+  if(p.name){ST.name=p.name;localStorage.setItem("ku_name",p.name);}
+  if(p.av){
+    var isValidAv=p.av.startsWith("http")||p.av.startsWith("data:")||p.av.length<=8;
+    ST.avatar=isValidAv?p.av:"👤";
+    localStorage.setItem("ku_av",ST.avatar);
+  }
+  db.collection("userGroups").doc(currentUser.uid).get().then(function(gdoc){
+    var hasGroups=gdoc.exists&&gdoc.data().groups&&gdoc.data().groups.length>0;
+    if(hasGroups){
+      ST.groups=normalizeGroups(gdoc.data().groups);
+      ST.group=ST.groups[0].id;
+      try{localStorage.setItem("ku_groups",JSON.stringify(ST.groups));}catch(e){}
+      try{localStorage.setItem("ku_grp",JSON.stringify({label:ST.groups[0].label,icon:ST.groups[0].icon}));}catch(e){}
+    }
+    function finishRestoreAndJoin(){
+      ST.boarded=true;localStorage.setItem("ku_ob","1");
+      ST.appReady=true;
+      fetchAllFeeds();syncOn();
+      redraw();
+      joinAdditionalGroupViaToken(token);
+    }
+    if(hasGroups){
+      // Same reasoning as the normal returning-user restore flow: per-group
+      // doc gets instead of a list query, which security rules can deny
+      // outright even when the equivalent plain get() succeeds.
+      var _adminCheckGids=(ST.groups||[]).map(function(g){return g.id;});
+      Promise.all(_adminCheckGids.map(function(gid){
+        return db.collection("members").doc(currentUser.uid+"_"+gid).get().catch(function(){return null;});
+      })).then(function(mdocs){
+        var isAdminAnywhere=mdocs.some(function(md){return md&&md.exists&&md.data().isAdmin;});
+        localStorage.setItem("ku_admin",isAdminAnywhere?"1":"0");
+        finishRestoreAndJoin();
+      }).catch(finishRestoreAndJoin);
+    } else {
+      finishRestoreAndJoin();
+    }
+  }).catch(function(){
+    ST.boarded=true;localStorage.setItem("ku_ob","1");
+    ST.appReady=true;
+    fetchAllFeeds();syncOn();
+    redraw();
+    joinAdditionalGroupViaToken(token);
+  });
+}
+function _lookUpAndApplyInviteToken(token){
   db.collection("inviteTokens").doc(token).get().then(function(doc){
     console.log("[INVITE DEBUG] inviteTokens doc fetched, exists:",doc.exists,"data:",doc.exists?doc.data():null);
     if(!doc.exists){
