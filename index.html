@@ -143,7 +143,7 @@ window.addEventListener("unhandledrejection",function(e){
 // refresh instead of leaving people stuck in a stale session. Bump
 // APP_VERSION by hand on every deploy (any changed string works - a
 // timestamp is easiest to keep unique).
-var APP_VERSION="2026-10-21T21:54:24Z";
+var APP_VERSION="2026-10-21T22:23:08Z";
 function checkForUpdate(){
   fetch(location.pathname+"?_v="+Date.now(),{cache:"no-store"})
     .then(function(r){return r.text();})
@@ -5930,19 +5930,24 @@ var _pendingToken=null;
     var hashParams=new URLSearchParams(window.location.hash.substring(1));
     token=hashParams.get("token");
   }
-  var joinGroup=params.get("join");
-  var joinIcon=params.get("icon");
   console.log("[INVITE DEBUG] init IIFE: raw hash=",window.location.hash,"extracted token=",token);
   if(token){
     _pendingToken=token;
     localStorage.setItem("ku_pending_token",token);
     window.history.replaceState({},"",window.location.pathname);
-  } else if(joinGroup){
-    ST.obGrpName=joinGroup;
-    if(joinIcon)ST.obGrpEmoji=joinIcon;
-    ST.joinInvite=true;
-    window.history.replaceState({},"",window.location.pathname);
   }
+  // NOTE: this used to also handle a legacy ?join=GroupName&icon=emoji link
+  // format (setting ST.joinInvite straight from the URL, no Firestore
+  // validation at all) from before the inviteTokens system existed. Removed -
+  // nothing in the app generates that link shape any more (the real "Invite
+  // Family" flow only ever creates #token= links, see the inviteTokens
+  // write near the Invite Family screen), so it was dead weight. It also
+  // became an active trap after today's fix made the phone-verify success
+  // handler defer entirely whenever ST.joinInvite is already true: a
+  // hypothetical ?join= link would have set that pre-auth with no token and
+  // nothing left to ever resolve it, permanently stranding that user on the
+  // phone-code screen after verifying. Simplest correct fix was removing the
+  // dead path outright rather than special-casing around it.
 })();
 
 // Check for pending invite token after auth
